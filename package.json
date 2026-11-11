@@ -1,0 +1,19 @@
+{
+  "name": "bh-uchet",
+  "version": "1.0.0",
+  "description": "БХ Учёт — заявки на закупку, деньги под отчёт, чеки, доходы и аналитика подразделения",
+  "private": true,
+  "main": "server/index.js",
+  "engines": { "node": ">=22.13" },
+  "scripts": {
+    "start": "node --no-warnings server/index.js",
+    "dev": "node --no-warnings --watch server/index.js",
+    "demo": "node --no-warnings server/demo.js",
+    "test": "node --no-warnings --test tests/*.test.js",
+    "reset": "node -e \"require('fs').rmSync('data',{recursive:true,force:true})\""
+  },
+  "optionalDependencies": {
+    "@anthropic-ai/sdk": "^1.6.0"
+  },
+  "license": "MIT"
+}
