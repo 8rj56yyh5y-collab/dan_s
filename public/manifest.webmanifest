@@ -1,0 +1,11 @@
+{
+  "name": "БХ Учёт",
+  "short_name": "БХ Учёт",
+  "description": "Заявки на закупку, деньги под отчёт, чеки и доходы подразделения БХ",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0f1f17",
+  "theme_color": "#0f1f17",
+  "lang": "ru",
+  "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+}
