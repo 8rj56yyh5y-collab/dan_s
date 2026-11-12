@@ -116,14 +116,14 @@
     const nav = (isHead() ? NAV_HEAD : NAV_STAFF).map(([p, i, t, b]) => (p === 'sep' ? '<div class="nav-sep"></div>'
       : `<a href="#${p}" class="${active(p) ? 'on' : ''}">${ic(i, 19)}<span>${t}</span>${badge(b)}</a>`)).join('');
     const tabs = (isHead() ? TAB_HEAD : TAB_STAFF).map(([p, i, t, b, plus]) => `<a href="#${p}" class="${plus ? 'plus' : ''} ${!plus && active(p) ? 'on' : ''}">${plus ? `<span class="pl">${ic(i, 24)}</span>` : ic(i, 22)}<span>${t}</span>${badge(b)}</a>`).join('');
-    const theme = document.documentElement.dataset.theme || 'light';
+    const theme = document.documentElement.dataset.theme;
     return `<div class="shell">
       <aside class="side">
         <a class="brand" href="#/"><span class="brand-mark">БХ</span><span><b>БХ Учёт</b><span>${isHead() ? 'Кабинет руководителя' : 'Кабинет сотрудника'}</span></span></a>
         <a class="btn hl" href="#/new">${ic('plus', 18)} Новая заявка</a>
         <nav class="nav">${nav}</nav>
         <div class="side-foot">
-          <div class="theme-switch" role="group" aria-label="Тема">${['light', 'dark', 'eco'].map((t) => `<button data-theme-set="${t}" class="${theme === t ? 'on' : ''}">${{ light: 'Светлая', dark: 'Тёмная', eco: 'Эко' }[t]}</button>`).join('')}</div>
+          <div class="theme-switch" role="group" aria-label="Тема">${themeButtons(theme)}</div>
           <a class="me" href="#/profile"><span class="avatar">${esc(initials(S.me.name))}</span><span style="min-width:0"><b>${esc(S.me.name)}</b><span>${esc(S.me.position || (isHead() ? 'Руководитель' : 'Сотрудник'))}</span></span></a>
         </div>
       </aside>
@@ -133,10 +133,12 @@
       <nav class="tabbar">${tabs}</nav>
     </div>`;
   }
+  const themeButtons = (theme) => [['light', 'sun', 'Белая'], ['dark', 'moon', 'Чёрная']].map(([t, i, n]) => `<button data-theme-set="${t}" class="${theme === t ? 'on' : ''}">${ic(i, 15)} ${n}</button>`).join('');
   function setTheme(t) {
     document.documentElement.dataset.theme = t;
     try { localStorage.setItem('bh-theme', t); } catch { /* приватный режим */ }
     $$('[data-theme-set]').forEach((b) => b.classList.toggle('on', b.dataset.themeSet === t));
+    const meta = document.querySelector('meta[name=theme-color]'); if (meta) meta.content = t === 'dark' ? '#000000' : '#ffffff';
   }
   document.addEventListener('click', (e) => { const b = e.target.closest('[data-theme-set]'); if (b) setTheme(b.dataset.themeSet); });
 
@@ -291,8 +293,8 @@
   const MONTHS = ['янв', 'фев', 'мар', 'апр', 'май', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'];
   const monthName = (m) => { const [y, mm] = m.split('-'); return `${MONTHS[Number(mm) - 1]} ${y.slice(2)}`; };
   const barPath = (x, y, w, h, r = 4) => { if (h <= 0) return ''; r = Math.min(r, h, w / 2); return `M${x},${y + h}V${y + r}Q${x},${y} ${x + r},${y}H${x + w - r}Q${x + w},${y} ${x + w},${y + r}V${y + h}Z`; };
-  function monthlyChart(rows) {
-    const W = 760; const H = 260; const L = 46; const B = 26; const T = 10; const pw = W - L - 6; const ph = H - B - T;
+  function monthlyChart(rows, W = 760, H = 260) {
+    const L = 46; const B = 26; const T = 10; const pw = W - L - 6; const ph = H - B - T;
     const max = Math.max(1, ...rows.map((r) => Math.max(r.income, r.expenses)));
     const step = Math.pow(10, Math.floor(Math.log10(max))); const nice = Math.ceil(max / step / 2) * step * 2 / 4 || 1;
     const top = nice * 4;
@@ -372,7 +374,7 @@
         ${listCard(`<h3>Доходы на подтверждение <span class="faint">${inc.length}</span></h3>`, inc, 'Новых доходов нет', '<a class="link small" href="#/incomes?status=new">Все</a>')}
       </div>
       <div class="grid-2" style="margin-top:16px">
-        <div class="card"><div class="card-h"><h3>Доходы и расходы за 12 месяцев</h3><a class="link small" href="#/analytics">Подробнее</a></div>${monthlyChart(o.monthly)}</div>
+        <div class="card"><div class="card-h"><h3>Доходы и расходы за 12 месяцев</h3><a class="link small" href="#/analytics">Подробнее</a></div>${monthlyChart(o.monthly, 540, 240)}</div>
         <div class="card"><div class="card-h"><h3>Деньги под отчётом</h3><span class="faint small">выдано, но не отчитано</span></div>
           ${adv.length ? `<table class="t"><tbody>${adv.map((a) => `<tr><td>${esc(a.name)}</td><td class="faint">${a.open_count ? `${a.open_count} заявк. без отчёта` : 'не вернул остаток'}</td><td class="r num"><b>${money(a.balance)}</b></td></tr>`).join('')}</tbody></table>` : '<div class="empty small">Все выданные деньги отчитаны</div>'}
           <div class="card-h" style="margin:18px 0 10px"><h3>В работе</h3></div>
@@ -1000,7 +1002,7 @@
         ${kpi('Прибыль', money(c.profit), margin != null ? `рентабельность ${nf(margin, 1)}% · ${delta(c.profit, p.profit)}` : '', 'ink')}
         ${kpi('Экономия к согласованному', money(o.saved), `${c.expense_count} проведённых заявок`)}
       </div>
-      <div class="card" style="margin-bottom:16px"><div class="card-h"><h3>Доходы и расходы по месяцам</h3><span class="faint small">12 месяцев до конца периода</span></div>${monthlyChart(o.monthly)}
+      <div class="card" style="margin-bottom:16px"><div class="card-h"><h3>Доходы и расходы по месяцам</h3><span class="faint small">12 месяцев до конца периода</span></div>${monthlyChart(o.monthly, 1080, 300)}
         <details style="margin-top:12px"><summary class="link small" style="cursor:pointer">Показать таблицей</summary><div class="table-wrap"><table class="t" style="margin-top:8px"><thead><tr><th>Месяц</th><th class="r">Доходы</th><th class="r">Расходы</th><th class="r">Прибыль</th></tr></thead><tbody>${o.monthly.map((m) => `<tr><td>${monthName(m.month)}</td><td class="r num">${money(m.income)}</td><td class="r num">${money(m.expenses)}</td><td class="r num ${m.profit >= 0 ? 'up' : 'down'}">${money(m.profit)}</td></tr>`).join('')}</tbody></table></div></details></div>
       <div class="grid-2">
         <div class="card"><div class="card-h"><h3>Прибыль по объектам</h3></div>${objRows ? `<div class="table-wrap"><table class="t resp"><thead><tr><th>Объект</th><th class="r">Доход</th><th class="r">Расход</th><th class="r">Прибыль</th><th class="r hide-m">Марж.</th></tr></thead><tbody>${objRows}</tbody></table></div>` : '<div class="empty small">Нет данных</div>'}</div>
@@ -1160,7 +1162,7 @@
 
   // ================= Профиль, «Ещё» =================
   function pageProfile() {
-    const theme = document.documentElement.dataset.theme || 'light';
+    const theme = document.documentElement.dataset.theme;
     return `${head('Профиль', `${esc(S.me.name)} · ${esc(S.me.login)} · ${isHead() ? 'Руководитель' : 'Сотрудник'}`)}
       <div class="grid-2">
         <form class="card stack" id="pw"><h3 style="margin:0">Смена пароля</h3>
@@ -1168,7 +1170,7 @@
           <label class="field"><span>Новый пароль</span><input class="input" type="password" name="next" autocomplete="new-password"><small class="hint">Минимум 8 символов, буквы и цифры. Остальные сеансы будут закрыты.</small></label>
           <button class="btn">Сменить пароль</button></form>
         <div class="card stack"><h3 style="margin:0">Оформление</h3>
-          <div class="tabs">${['light', 'dark', 'eco'].map((t) => `<button data-theme-set="${t}" class="${theme === t ? 'on' : ''}">${{ light: 'Светлая', dark: 'Тёмная', eco: 'Эко' }[t]}</button>`).join('')}</div>
+          <div class="theme-switch" style="max-width:320px">${themeButtons(theme)}</div>
           <p class="muted small" style="margin:0">На iPhone: «Поделиться» → «На экран Домой» — БХ Учёт откроется как приложение.</p>
           <button class="btn danger" id="logout">${ic('logout')} Выйти</button></div>
       </div>`;
@@ -1179,7 +1181,7 @@
       e.preventDefault(); const f = e.target;
       try { await post('/api/me/password', { current: f.current.value, next: f.next.value }); toast('Пароль изменён'); f.reset(); } catch (err) { fail(err); }
     };
-    $$('.main [data-theme-set]').forEach((b) => b.addEventListener('click', () => $$('.main [data-theme-set]').forEach((x) => x.classList.toggle('on', x === b))));
+    
   };
   function pageMore() {
     const links = [['/incomes', 'coins', 'Доходы'], ['/journal', 'history', 'Журнал'], ['/team', 'users', 'Команда'], ['/settings', 'sliders', 'Настройки'], ['/new', 'plus', 'Новая заявка'], ['/profile', 'user', 'Профиль']];

@@ -4,8 +4,8 @@
   "description": "Заявки на закупку, деньги под отчёт, чеки и доходы подразделения БХ",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#0f1f17",
-  "theme_color": "#0f1f17",
+  "background_color": "#000000",
+  "theme_color": "#000000",
   "lang": "ru",
   "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
 }
