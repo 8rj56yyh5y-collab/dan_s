@@ -395,3 +395,11 @@ textarea.input { min-height: 84px; }
   .tabbar { background: color-mix(in srgb, var(--bg) 90%, transparent); }
   .tabbar a.on::after { content: ''; position: absolute; top: 0; left: 30%; right: 30%; height: 2px; border-radius: 2px; background: var(--text); }
 }
+.auth-art .motto { margin: 22px 0 0; padding: 4px 0 4px 16px; border-left: 3px solid var(--hl); color: #fff; font-size: 1.12rem; font-weight: 500; line-height: 1.45; max-width: 40ch; letter-spacing: -0.01em; }
+@media (max-width: 860px) { .auth-art .motto { font-size: 1rem; margin-top: 16px; } }
+@media (max-width: 860px) {
+  .auth-art { gap: 16px; padding: 22px 20px 24px; }
+  .auth-art h1 { font-size: 1.7rem; margin-bottom: 0; }
+  .auth-art p { display: none; }
+  .auth-art .motto { font-size: .95rem; margin-top: 12px; }
+}
