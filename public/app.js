@@ -201,23 +201,35 @@
   const head = (title, sub = '', actions = '', crumbs = '') => `${crumbs ? `<div class="crumbs">${crumbs}</div>` : ''}<div class="page-head"><div><h1>${title}</h1>${sub ? `<div class="sub">${sub}</div>` : ''}</div><div class="row">${actions}</div></div>`;
 
   // ================= Вход =================
+  // Мысль дня на странице входа — каждый раз новая.
+  const MOTTOS = [
+    'Большое строится из маленьких шагов, сделанных каждый день.',
+    'Сила воли — это выбор, который делаешь снова и снова.',
+    'Порядок в делах даёт свободу в мыслях.',
+    'Не бывает маленькой работы — бывает работа, сделанная с душой.',
+    'Мы сильны, когда держим слово: друг перед другом и перед делом.',
+    'Сегодня — лучший день, чтобы сделать работу хорошо.',
+    'Тот, кто начинает вовремя, приходит первым.',
+    'Хорошая база — это люди, которые не сдаются.',
+  ];
   function pageLogin(root) {
     root.innerHTML = `<div class="auth">
       <section class="auth-art">
-        <a class="brand"><span class="brand-mark">БХ</span><span><b>БХ Учёт</b><span style="color:var(--ink-muted)">подразделение БХ</span></span></a>
-        <div><h1>Каждая гривна — с заявкой и чеком</h1><p>Заявки на закупку, деньги под отчёт, чеки, доходы и аналитика подразделения в одном месте.</p></div>
+        <a class="brand"><span class="brand-mark">БХ</span><span><b>БХ Учёт</b><span>подразделение БХ</span></span></a>
+        <div><h1>Сильные дела начинаются с порядка</h1><p>Мы строим базу, на которую можно опереться. День за днём — честно, слаженно и с уважением к общему делу.</p>
+          <blockquote class="motto">${esc(MOTTOS[Math.floor(Math.random() * MOTTOS.length)])}</blockquote></div>
         <div class="pts">
-          <div class="pt">${ic('checkCircle', 20)}<span><b>Заявка → согласование → чек</b>Без согласования руководителя покупка не проводится, без чека — не закрывается.</span></div>
-          <div class="pt">${ic('clock', 20)}<span><b>2 часа на исправление</b>Ошиблись — исправьте сами. Дальше — только по запросу руководителю. Все правки в журнале.</span></div>
-          <div class="pt">${ic('chart', 20)}<span><b>Прибыль и затраты</b>По месяцам, объектам, сотрудникам и товарам. Контроль цен на каждую позицию.</span></div>
+          <div class="pt">${ic('users', 20)}<span><b>Одна команда</b>Задачи, решения и результаты — в одном месте. Каждый видит свой вклад в общее дело.</span></div>
+          <div class="pt">${ic('sparkles', 20)}<span><b>Право на ошибку</b>Ошибся — спокойно поправь. Так мы учимся и становимся сильнее.</span></div>
+          <div class="pt">${ic('trendUp', 20)}<span><b>Видно, как мы растём</b>Результаты подразделения — наглядно, по месяцам и по каждому объекту.</span></div>
         </div>
       </section>
       <section class="auth-form"><form class="box" id="lf" novalidate>
-        <div><h2 style="margin-bottom:4px">Вход</h2><p class="muted" style="margin:0">Логин и пароль выдаёт руководитель подразделения.</p></div>
+        <div><h2 style="margin-bottom:4px">Добро пожаловать</h2><p class="muted" style="margin:0">Войдите, чтобы продолжить работу.</p></div>
         <label class="field"><span>Логин</span><input class="input" name="login" autocomplete="username" autocapitalize="none" required></label>
         <label class="field"><span>Пароль</span><input class="input" name="password" type="password" autocomplete="current-password" required></label>
         <button class="btn lg block">Войти</button>
-        <p class="faint xs" style="margin:0">${ic('lock', 14)} Соединение и пароли защищены. После 5 неверных попыток вход блокируется на 15 минут.</p>
+        <p class="faint xs" style="margin:0">Нет доступа или забыли пароль? Обратитесь к руководителю подразделения — он выдаст новый.</p>
       </form></section></div>`;
     $('#lf').onsubmit = async (e) => {
       e.preventDefault();
