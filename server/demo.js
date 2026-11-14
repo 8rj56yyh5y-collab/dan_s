@@ -56,7 +56,7 @@ function seed() {
   db.exec('BEGIN');
   for (let k = 0; k < 70; k++) {
     const s = staff[k % 3];
-    const created = now - Math.floor((148 - k * 2.25) * day) - Math.floor(rnd() * 8 * 3600e3);
+    const created = now - Math.floor((152 - k * 2.15) * day) - Math.floor(rnd() * 8 * 3600e3);
     const lines = 1 + Math.floor(rnd() * 4);
     const items = [];
     for (let j = 0; j < lines; j++) {
@@ -106,6 +106,29 @@ function seed() {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(date, title, pick(['ФЛП Клиент А', 'ООО «Заказчик»', 'Частный клиент', 'Пункт приёма']), cat === 'Металлолом' ? OBJECTS[0] : pick(OBJECTS.slice(1)), cat, amount,
         pick(['cash', 'card', 'account']), staff[k % 3].id, status, created + 2 * 3600e3, created, created, status === 'confirmed' ? created + day : null, status === 'confirmed' ? head : null);
+  }
+  // Касса: пополнения раз в две недели, выдачи под отчёт и возвраты остатков, доходы наличными, мелкие расходы.
+  const cashIns = db.prepare(`INSERT INTO cash_ops (ts, direction, kind, amount, category, object, comment, request_id, income_id, user_id, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+  const ops = [];
+  for (let t = now - 150 * day; t < now; t += 14 * day) ops.push([t, 'in', 'topup', 20000, '', '', 'Пополнение из офиса', null, null]);
+  for (const r of db.prepare('SELECT * FROM requests WHERE issued_amount IS NOT NULL').all()) {
+    ops.push([r.created_at + 4 * 3600e3, 'out', 'issue', r.issued_amount, '', r.object, `Под отчёт: ${r.title}`, r.id, null]);
+    if (r.status === 'closed' && r.returned_amount > 0) ops.push([r.closed_at, 'in', 'return', r.returned_amount, '', r.object, `Возврат остатка: ${r.title}`, r.id, null]);
+  }
+  db.prepare('UPDATE requests SET issued_from_cash = 1 WHERE issued_amount IS NOT NULL').run();
+  for (const i of db.prepare("SELECT * FROM incomes WHERE status = 'confirmed' AND method = 'cash'").all()) {
+    ops.push([Date.parse(`${i.date}T12:00:00`), 'in', 'income', i.amount, i.category, i.object, i.title, null, i.id]);
+  }
+  for (let k = 0; k < 8; k++) ops.push([now - (140 - k * 17) * day, 'out', 'expense', 300 + Math.round(rnd() * 1500), pick(['Хозтовары', 'Транспорт', 'Прочее']), OBJECTS[0], pick(['Вода и чай', 'Такси за деталью', 'Моющие средства', 'Мелкий ремонт']), null, null]);
+  ops.sort((a, b) => a[0] - b[0]);
+  // Реалистичный остаток: перед пополнением излишек сдаётся в офис, в минус касса не уходит.
+  let bal = 0;
+  for (const o of ops) {
+    if (o[2] === 'topup' && bal > 30000) { cashIns.run(o[0] - 3600e3, 'out', 'withdraw', bal - 15000, '', '', 'Сдано в офис', null, null, head, o[0]); bal = 15000; }
+    if (o[1] === 'out' && o[3] > bal) { const add = Math.ceil((o[3] - bal) / 1000) * 1000 + 5000; cashIns.run(o[0] - 60e3, 'in', 'topup', add, '', '', 'Пополнение из офиса', null, null, head, o[0]); bal += add; }
+    cashIns.run(o[0], o[1], o[2], o[3], o[4], o[5], o[6], o[7], o[8], head, o[0]);
+    bal += o[1] === 'in' ? o[3] : -o[3];
   }
   db.exec('COMMIT');
   logEvent(head, 'settings', null, 'demo_seeded', {});

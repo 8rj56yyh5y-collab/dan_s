@@ -147,6 +147,24 @@ function planFields(body, settings) {
   return out;
 }
 
+// ---------- касса: общие помощники (ручные операции и отчёт — в cash.js) ----------
+const cashBalance = () => round2(db.prepare("SELECT COALESCE(SUM(CASE direction WHEN 'in' THEN amount ELSE -amount END),0) s FROM cash_ops WHERE removed_at IS NULL").get().s);
+function cashInsert(op) {
+  const now = Date.now();
+  const res = db.prepare(`INSERT INTO cash_ops (ts, direction, kind, amount, category, object, comment, request_id, income_id, user_id, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(op.ts || now, op.direction, op.kind, round2(op.amount), op.category || '', op.object || '', op.comment || '', op.request_id || null, op.income_id || null, op.user_id, now);
+  return Number(res.lastInsertRowid);
+}
+// Автоматическая операция отменяется, если отменили то, что её породило (корректировка).
+function cashVoid(where, args, userId, reason) {
+  const ops = db.prepare(`SELECT * FROM cash_ops WHERE removed_at IS NULL AND ${where}`).all(...args);
+  for (const o of ops) {
+    db.prepare('UPDATE cash_ops SET removed_at = ?, removed_by = ?, remove_reason = ? WHERE id = ?').run(Date.now(), userId, reason, o.id);
+    logEvent(userId, 'cash', o.id, 'cash_voided', { kind: o.kind, amount: o.amount, reason });
+  }
+}
+
 // ---------- заявки ----------
 function createRequest(user, body) {
   if (user.role !== 'staff' && user.role !== 'head') throw new HttpError(403, 'Нет доступа');
@@ -332,15 +350,26 @@ function headAction(user, id, action, body = {}) {
         if (r.status !== 'approved') throw new HttpError(409, 'Выдать деньги можно по согласованной заявке');
         const amt = money(body.issued_amount ?? r.approved_amount ?? r.amount, { allowZero: false });
         if (amt == null) throw new HttpError(400, 'Проверьте выданную сумму');
-        db.prepare("UPDATE requests SET status='issued', issued_amount=?, updated_at=? WHERE id=?").run(amt, now, r.id);
-        logEvent(user.id, 'request', r.id, 'issued', { issued_amount: amt, comment });
+        // По умолчанию деньги выдаются из кассы; «не из кассы» — например, переводом на карту.
+        const fromCash = !(body.from_cash === false || body.from_cash === '0' || body.from_cash === 'no');
+        if (fromCash) {
+          const bal = cashBalance();
+          if (amt > bal) throw new HttpError(409, `В кассе ${fm(bal)} — не хватает на выдачу ${fm(amt)}. Пополните кассу или выберите «не из кассы».`);
+          const rq = loadRequest(r.id);
+          cashInsert({ direction: 'out', kind: 'issue', amount: amt, request_id: r.id, object: rq.object, comment: `Под отчёт: ${rq.title}`.slice(0, 300), user_id: user.id });
+        }
+        db.prepare("UPDATE requests SET status='issued', issued_amount=?, issued_from_cash=?, updated_at=? WHERE id=?").run(amt, fromCash ? 1 : 0, now, r.id);
+        logEvent(user.id, 'request', r.id, 'issued', { issued_amount: amt, comment, from_cash: fromCash });
         break;
       }
       case 'close':
         if (r.status !== 'review') throw new HttpError(409, 'Провести можно только отчёт на проверке');
         db.prepare("UPDATE requests SET status='closed', closed_at=?, closed_by=?, head_comment=CASE WHEN ?<>'' THEN ? ELSE head_comment END, updated_at=? WHERE id=?")
           .run(now, user.id, comment, comment, now, r.id);
-        logEvent(user.id, 'request', r.id, 'closed', { actual_total: r.actual_total, comment });
+        if (r.issued_from_cash && r.returned_amount > 0) {
+          cashInsert({ direction: 'in', kind: 'return', amount: r.returned_amount, request_id: r.id, object: r.object, comment: `Возврат остатка: ${r.title}`.slice(0, 300), user_id: user.id });
+        }
+        logEvent(user.id, 'request', r.id, 'closed', { actual_total: r.actual_total, comment, cash_return: r.issued_from_cash && r.returned_amount > 0 ? r.returned_amount : null });
         break;
       case 'comment':
         if (!comment) throw new HttpError(400, 'Пустой комментарий');
@@ -397,11 +426,11 @@ function storeFile(user, owner, k, name, data) {
   const stored = `${crypto.randomBytes(16).toString('hex')}${ALLOWED[mime]}`;
   fs.writeFileSync(path.join(UPLOAD_DIR, stored), buf, { mode: 0o600 });
   const dup = db.prepare('SELECT id, request_id, income_id FROM files WHERE sha256 = ? LIMIT 1').get(sha256);
-  const res = db.prepare(`INSERT INTO files (request_id, income_id, user_id, kind, orig_name, mime, size, stored, sha256, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(owner.request_id, owner.income_id, user.id, k, str(name, 120) || `файл${ALLOWED[mime]}`, mime, buf.length, stored, sha256, Date.now());
+  const res = db.prepare(`INSERT INTO files (request_id, income_id, cash_op_id, user_id, kind, orig_name, mime, size, stored, sha256, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(owner.request_id || null, owner.income_id || null, owner.cash_op_id || null, user.id, k, str(name, 120) || `файл${ALLOWED[mime]}`, mime, buf.length, stored, sha256, Date.now());
   const fid = Number(res.lastInsertRowid);
-  logEvent(user.id, owner.request_id ? 'request' : 'income', owner.request_id || owner.income_id, 'file_added',
+  logEvent(user.id, owner.request_id ? 'request' : owner.income_id ? 'income' : 'cash', owner.request_id || owner.income_id || owner.cash_op_id, 'file_added',
     { file_id: fid, kind: k, name: str(name, 120), duplicate_of: dup ? (dup.request_id ? reqNumber(dup.request_id) : incNumber(dup.income_id)) : null });
   return fid;
 }
@@ -409,6 +438,7 @@ function storeFile(user, owner, k, name, data) {
 function fileFor(user, id) {
   const f = db.prepare('SELECT * FROM files WHERE id = ?').get(Number(id));
   if (!f) throw new HttpError(404, 'Файл не найден');
+  if (f.cash_op_id) { if (user.role !== 'head') throw new HttpError(404, 'Файл не найден'); return f; }
   const ownerId = f.request_id ? loadRequest(f.request_id).user_id : loadIncome(f.income_id).user_id;
   if (!canSee(user, ownerId)) throw new HttpError(404, 'Файл не найден');
   return f;
@@ -531,7 +561,10 @@ function headIncomeAction(user, id, action, body = {}) {
   const now = Date.now();
   if (action === 'confirm') {
     if (inc.status !== 'new') throw new HttpError(409, 'Запись уже обработана');
-    db.prepare("UPDATE incomes SET status='confirmed', head_comment=?, decided_at=?, decided_by=?, updated_at=? WHERE id=?").run(comment, now, user.id, now, inc.id);
+    tx(() => {
+      db.prepare("UPDATE incomes SET status='confirmed', head_comment=?, decided_at=?, decided_by=?, updated_at=? WHERE id=?").run(comment, now, user.id, now, inc.id);
+      if (inc.method === 'cash') cashInsert({ direction: 'in', kind: 'income', amount: inc.amount, income_id: inc.id, object: inc.object, category: inc.category, comment: inc.title.slice(0, 300), user_id: user.id, ts: Math.max(Date.parse(`${inc.date}T12:00:00`) || now, 0) });
+    });
   } else if (action === 'reject') {
     if (inc.status !== 'new') throw new HttpError(409, 'Запись уже обработана');
     if (!comment) throw new HttpError(400, 'Напишите причину');
@@ -570,10 +603,12 @@ function decideCorrection(user, id, approve, comment) {
     if (approve) {
       if (c.entity === 'income') {
         db.prepare("UPDATE incomes SET status='new', edit_until=?, updated_at=? WHERE id=?").run(until, now, c.entity_id);
+        cashVoid("kind = 'income' AND income_id = ?", [c.entity_id], user.id, 'Доход открыт на корректировку');
       } else {
         const r = loadRequest(c.entity_id);
         // Проведённый отчёт возвращается на проверку; остальное — просто открывается на правку.
         const status = r.status === 'closed' ? 'review' : r.status;
+        if (r.status === 'closed') cashVoid("kind = 'return' AND request_id = ?", [r.id], user.id, 'Отчёт открыт на корректировку');
         db.prepare('UPDATE requests SET status=?, edit_until=?, closed_at = CASE WHEN ?=\'review\' AND status=\'closed\' THEN NULL ELSE closed_at END, updated_at=? WHERE id=?')
           .run(status, until, status, now, r.id);
       }
@@ -649,9 +684,10 @@ function flagsForRequest(r, items, files, settings = getSettings()) {
 }
 
 module.exports = {
+  cashBalance, cashInsert, cashVoid, fm,
   DELIVERY_STATUSES, CARRIERS, PAID_BY, deliveriesOf, deliveryTotal, canAddDelivery, addDelivery, removeDelivery,
   HttpError, STATUS, INCOME_STATUS, str, money, round2, isDate, reqNumber, incNumber, median,
-  canSee, loadRequest, requestFor, canEditPlan, canEditReport, itemsOf, planTotal, actualTotal,
+  storeFile, canSee, loadRequest, requestFor, canEditPlan, canEditReport, itemsOf, planTotal, actualTotal,
   createRequest, updateRequest, staffAction, headAction,
   addFile, fileFor, removeFile, ALLOWED,
   loadIncome, incomeFor, createIncome, updateIncome, headIncomeAction,

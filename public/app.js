@@ -65,7 +65,10 @@
   }
   // Диалог с полями: fields = [{name, label, type, value, required, hint}]
   function ask({ title, text = '', fields = [], ok = 'Готово', danger = false }) {
-    const fh = fields.map((f) => `<label class="field"><span>${esc(f.label)}</span>${f.type === 'textarea'
+    const fh = fields.map((f) => `<label class="field"><span>${esc(f.label)}</span>${f.type === 'select'
+      ? `<select class="input" name="${f.name}">${f.options.map(([v, t]) => `<option value="${esc(v)}" ${String(f.value ?? '') === String(v) ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select>`
+      : f.type === 'file' ? `<input class="input" type="file" name="${f.name}" accept="image/*,application/pdf" style="padding-top:8px">`
+      : f.type === 'textarea'
       ? `<textarea class="input" name="${f.name}" ${f.required ? 'required' : ''} placeholder="${esc(f.placeholder || '')}">${esc(f.value || '')}</textarea>`
       : `<input class="input" name="${f.name}" type="${f.type || 'text'}" value="${esc(f.value ?? '')}" ${f.required ? 'required' : ''} inputmode="${f.type === 'money' ? 'decimal' : 'text'}" placeholder="${esc(f.placeholder || '')}">`}
       ${f.hint ? `<small class="hint">${esc(f.hint)}</small>` : ''}</label>`).join('');
@@ -73,12 +76,14 @@
       <div class="acts"><button type="button" class="btn soft" data-close>Отмена</button><button class="btn ${danger ? 'danger' : ''}">${esc(ok)}</button></div></form>`, {
       onOpen: (box, close) => {
         const form = $('form', box);
-        const first = $('input,textarea', form); if (first) setTimeout(() => first.focus(), 30);
-        form.onsubmit = (e) => {
+        const first = $('input:not([type=file]),textarea', form); if (first) setTimeout(() => first.focus(), 30);
+        form.onsubmit = async (e) => {
           e.preventDefault();
           const out = {};
           for (const f of fields) {
-            const el = form.elements[f.name]; const v = el.value.trim();
+            const el = form.elements[f.name];
+            if (f.type === 'file') { const file = el.files[0]; if (file) out[f.name] = { name: file.name, data: await prepareFile(file) }; continue; }
+            const v = el.value.trim();
             if (f.required && !v) { el.classList.add('bad'); el.focus(); return; }
             out[f.name] = f.type === 'money' ? v.replace(/\s/g, '').replace(',', '.') : v;
           }
@@ -100,7 +105,7 @@
 
   // ================= Каркас =================
   const NAV_HEAD = [
-    ['/', 'home', 'Обзор'], ['/requests', 'list', 'Заявки', 'todo'], ['/incomes', 'coins', 'Доходы', 'inc'],
+    ['/', 'home', 'Обзор'], ['/requests', 'list', 'Заявки', 'todo'], ['/incomes', 'coins', 'Доходы', 'inc'], ['/cash', 'wallet', 'Касса'],
     ['/analytics', 'chart', 'Аналитика'], ['/control', 'shield', 'Контроль', 'flags'], ['/journal', 'history', 'Журнал'],
     ['sep'], ['/team', 'users', 'Команда'], ['/settings', 'sliders', 'Настройки'],
   ];
@@ -171,11 +176,11 @@
       '': isHead() ? pageHeadHome : pageStaffHome,
       requests: pageRequests, new: pageNew, r: pageRequest, edit: pageEditRequest,
       incomes: pageIncomes, income: pageIncome, 'new-income': pageNewIncome,
-      analytics: pageAnalytics, control: pageControl, journal: pageJournal, team: pageTeam, settings: pageSettings,
+      analytics: pageAnalytics, control: pageControl, cash: pageCash, journal: pageJournal, team: pageTeam, settings: pageSettings,
       profile: pageProfile, more: pageMore,
     };
     const page = pages[r.parts[0] || ''] || pageNotFound;
-    const headOnly = ['analytics', 'control', 'journal', 'team', 'settings', 'more'];
+    const headOnly = ['analytics', 'control', 'journal', 'team', 'settings', 'more', 'cash'];
     if (headOnly.includes(r.parts[0]) && !isHead()) { root.innerHTML = shell(noAccess()); return; }
     root.innerHTML = shell('<div class="sk" style="height:110px;margin-bottom:16px"></div><div class="sk" style="height:360px"></div>');
     window.scrollTo(0, 0);
@@ -387,7 +392,8 @@
       </div>
       <div class="grid-2" style="margin-top:16px">
         <div class="card"><div class="card-h"><h3>Доходы и расходы за 12 месяцев</h3><a class="link small" href="#/analytics">Подробнее</a></div>${monthlyChart(o.monthly, 540, 240)}</div>
-        <div class="card"><div class="card-h"><h3>Деньги под отчётом</h3><span class="faint small">выдано, но не отчитано</span></div>
+        <div class="card"><a class="money-line" href="#/cash" style="margin:-4px 0 14px;border-bottom:1px solid var(--line);padding-bottom:14px"><span><span class="muted small">В кассе сейчас</span></span><b style="font-size:1.4rem">${money(o.cash_balance)}</b></a>
+          <div class="card-h"><h3>Деньги под отчётом</h3><span class="faint small">выдано, но не отчитано</span></div>
           ${adv.length ? `<table class="t"><tbody>${adv.map((a) => `<tr><td>${esc(a.name)}</td><td class="faint">${a.open_count ? `${a.open_count} заявк. без отчёта` : 'не вернул остаток'}</td><td class="r num"><b>${money(a.balance)}</b></td></tr>`).join('')}</tbody></table>` : '<div class="empty small">Все выданные деньги отчитаны</div>'}
           <div class="card-h" style="margin:18px 0 10px"><h3>В работе</h3></div>
           <div class="kv"><dt>Согласовано, ждём покупку/отчёт</dt><dd>${money(o.pipeline.filter((x) => ['approved', 'issued', 'report_revision'].includes(x.status)).reduce((s, x) => s + x.s, 0))}</dd>
@@ -674,7 +680,8 @@
     report_submitted: ['Отчёт отправлен', 'send', 'hl'], report_edited: ['Отчёт исправлен после отправки', 'edit', 'warn'], report_returned: ['Отчёт возвращён на доработку', 'refresh', 'warn'],
     closed: ['Проведено', 'check', 'hl'], cancelled: ['Отменено', 'xCircle', 'bad'], comment: ['Комментарий', 'chat', ''], file_added: ['Добавлен файл', 'upload', ''],
     file_removed: ['Файл убран', 'trash', 'warn'], correction_requested: ['Запрос на корректировку', 'unlock', 'warn'], correction_approved: ['Корректировка разрешена', 'unlock', 'hl'],
-    correction_rejected: ['В корректировке отказано', 'lock', 'bad'], ai_receipt: ['Чек распознан ИИ', 'sparkles', ''], delivery_added: ['Добавлена доставка', 'truck', 'hl'], delivery_removed: ['Доставка удалена', 'truck', 'warn'], confirmed: ['Подтверждено', 'checkCircle', 'hl'],
+    correction_rejected: ['В корректировке отказано', 'lock', 'bad'], ai_receipt: ['Чек распознан ИИ', 'sparkles', ''], delivery_added: ['Добавлена доставка', 'truck', 'hl'], cash_topup: ['Касса: пополнение', 'wallet', 'hl'], cash_expense: ['Касса: расход', 'wallet', 'warn'],
+    cash_withdraw: ['Касса: сдано', 'wallet', ''], cash_recount: ['Касса: пересчёт', 'scale', 'warn'], cash_recount_ok: ['Касса: пересчёт сошёлся', 'scale', 'hl'], cash_voided: ['Касса: операция отменена', 'wallet', 'bad'], delivery_removed: ['Доставка удалена', 'truck', 'warn'], confirmed: ['Подтверждено', 'checkCircle', 'hl'],
     login: ['Вход в систему', 'user', ''], login_failed: ['Неудачный вход', 'alert', 'bad'], logout: ['Выход', 'logout', ''], password_changed: ['Сменён пароль', 'lock', ''],
     password_reset: ['Пароль сброшен руководителем', 'lock', 'warn'], user_created: ['Добавлен сотрудник', 'users', 'hl'], user_updated: ['Изменён сотрудник', 'users', 'warn'],
     settings_updated: ['Изменены настройки', 'sliders', 'warn'], exported: ['Выгрузка CSV', 'download', ''], bootstrap: ['Система создана', 'sparkles', ''], demo_seeded: ['Загружены демо-данные', 'sparkles', ''],
@@ -699,6 +706,13 @@
     if (d.duplicate_of) bits.push(`<span class="down">тот же файл уже есть в ${esc(d.duplicate_of)}</span>`);
     if (d.total != null && e.action === 'ai_receipt') bits.push(`итог в чеке ${money(d.total)}`);
     if (d.until) bits.push(`до ${dt(d.until)}`);
+    if (e.action.startsWith('cash_')) {
+      if (d.amount != null) bits.push(`${d.direction === 'in' ? '+' : d.direction === 'out' ? '−' : ''}${money(d.amount)}`);
+      if (d.balance_after != null) bits.push(`в кассе ${money(d.balance_after)}`);
+      if (d.balance != null) bits.push(`в кассе ${money(d.balance)}`);
+    }
+    if (d.from_cash != null && e.action === 'issued') bits.push(d.from_cash ? 'из кассы' : 'не из кассы');
+    if (d.cash_return) bits.push(`остаток ${money(d.cash_return)} вернулся в кассу`);
     if (e.action.startsWith('delivery')) {
       bits.push(money(d.amount));
       if (d.carrier) bits.push(esc(d.carrier));
@@ -941,8 +955,10 @@
       const r = await ask({ title: `Согласовать ${x.number}`, text: `Сумма по заявке: <b>${money(x.amount)}</b>`, fields: [{ name: 'approved_amount', label: `Согласованная сумма, ${cur()}`, type: 'money', value: x.amount, hint: 'Можно согласовать меньшую сумму' }, { name: 'comment', label: 'Комментарий (необязательно)', type: 'textarea' }], ok: 'Согласовать' });
       if (!r) return; body = { ...body, ...r };
     } else if (action === 'issue') {
-      const r = await ask({ title: 'Выдать деньги', fields: [{ name: 'issued_amount', label: `Выдано, ${cur()}`, type: 'money', value: x.approved_amount ?? x.amount }, { name: 'comment', label: 'Как выдали (наличные, на карту…)', type: 'text' }], ok: 'Отметить выдачу' });
-      if (!r) return; body = { ...body, ...r };
+      const r = await ask({ title: 'Выдать деньги', fields: [{ name: 'issued_amount', label: `Выдано, ${cur()}`, type: 'money', value: x.approved_amount ?? x.amount },
+        { name: 'from_cash', label: 'Откуда', type: 'select', value: '1', options: [['1', 'Из кассы БХ (наличные)'], ['0', 'Не из кассы (перевод на карту и т. п.)']] },
+        { name: 'comment', label: 'Комментарий (необязательно)', type: 'text' }], ok: 'Отметить выдачу' });
+      if (!r) return; body = { ...body, ...r, from_cash: r.from_cash === '1' };
     } else if (action === 'close') {
       const warn = x.flags?.filter((f) => f.level === 'high').length;
       const r = await ask({ title: `Провести ${x.number}`, text: `Потрачено по чекам: <b>${money(x.actual_total)}</b>${warn ? `<br><span class="down">Есть серьёзные замечания проверки: ${warn}</span>` : ''}`, fields: [{ name: 'comment', label: 'Комментарий (необязательно)', type: 'textarea' }], ok: 'Провести' });
@@ -1150,7 +1166,7 @@
       return `<div class="ev"><span class="ic ${c}">${ic(i, 13)}</span><div><b>${t}</b>${e.number ? ` · <a class="link" href="#/${e.entity === 'request' ? 'r' : 'income'}/${e.entity_id}">${esc(e.number)}</a>` : ''} <span class="when">${dt(e.ts)} · ${esc(e.user_name || 'система')}</span>${evBody(e)}</div></div>`; }).join('');
     const last = data.items.at(-1);
     return `${head('Журнал', 'Все действия в системе: кто, что и когда изменил. Записи нельзя удалить или исправить.')}
-      <div class="tabs" style="margin-bottom:14px">${[['', 'Всё'], ['request', 'Заявки'], ['income', 'Доходы'], ['auth', 'Входы'], ['user', 'Сотрудники'], ['settings', 'Настройки']].map(([k, t]) => `<a href="#/journal${k ? `?entity=${k}` : ''}" class="${(r.q.entity || '') === k ? 'on' : ''}">${t}</a>`).join('')}</div>
+      <div class="tabs" style="margin-bottom:14px">${[['', 'Всё'], ['request', 'Заявки'], ['income', 'Доходы'], ['auth', 'Входы'], ['cash', 'Касса'], ['user', 'Сотрудники'], ['settings', 'Настройки']].map(([k, t]) => `<a href="#/journal${k ? `?entity=${k}` : ''}" class="${(r.q.entity || '') === k ? 'on' : ''}">${t}</a>`).join('')}</div>
       <div class="card">${rows ? `<div class="timeline">${rows}</div>` : '<div class="empty">Пусто</div>'}
       ${data.items.length === 100 && last ? `<div style="margin-top:12px"><a class="btn soft" href="#/journal?${new URLSearchParams({ ...r.q, before: last.id })}">Показать раньше</a></div>` : ''}</div>`;
   }
@@ -1241,6 +1257,79 @@
     };
   };
 
+  // ================= Касса =================
+  let cashData = null;
+  const CASH_KIND_IC = { topup: 'plus', income: 'coins', return: 'refresh', issue: 'wallet', expense: 'receipt', withdraw: 'upload', recount: 'scale' };
+  async function pageCash(r) {
+    const q = r.q; cashData = await api(`/api/head/cash?${new URLSearchParams(q)}`);
+    const c = cashData;
+    const presets = periodPresets();
+    const link = (extra) => `#/cash?${new URLSearchParams({ ...q, ...extra })}`;
+    const kindTabs = [['', 'Все'], ['topup', 'Пополнения'], ['expense', 'Расходы'], ['issue', 'Выдачи'], ['return', 'Возвраты'], ['income', 'Доходы'], ['withdraw', 'Сдано'], ['recount', 'Пересчёт']];
+    const rows = c.items.map((o) => {
+      const basis = o.request_id ? `<a class="link" href="#/r/${o.request_id}">${esc(o.request_number)}</a> ${esc(o.request_title || '')}`
+        : o.income_id ? `<a class="link" href="#/income/${o.income_id}">${esc(o.income_number)}</a> ${esc(o.income_title || '')}` : esc(o.comment);
+      const extra = [o.category, o.object].filter(Boolean).map(esc).join(' · ');
+      const off = o.removed_at ? ' style="opacity:.5;text-decoration:line-through"' : '';
+      return `<tr>
+        <td class="hide-m faint small">${dt(o.ts)}</td>
+        <td><div class="row" style="gap:8px;flex-wrap:nowrap"><span class="ev"><span class="ic ${o.direction === 'in' ? 'hl' : ''}">${ic(CASH_KIND_IC[o.kind] || 'money', 13)}</span></span>
+          <span${off}><b>${esc(o.kind_text)}</b><div class="small muted">${basis}${extra ? ` · ${extra}` : ''}</div>
+          <div class="xs faint">${esc(o.user_name)}<span class="hide-d"> · ${dt(o.ts)}</span>${o.file_id ? ` · <button class="link-btn xs" data-view="${o.file_id}" data-mime="">чек</button>` : ''}</div></span></div>
+          ${o.removed_at ? `<div class="xs down">Отменена: ${esc(o.remove_reason)} (${esc(o.removed_name)})</div>` : ''}</td>
+        <td class="r num"${off}>${o.direction === 'in' ? `<b class="up">+${money(o.amount)}</b>` : `<b>−${money(o.amount)}</b>`}</td>
+        <td class="r num hide-m faint">${money(o.balance_after)}</td>
+        <td class="r">${o.manual && !o.removed_at ? `<button class="link-btn xs" data-void="${o.id}" style="color:var(--danger)">отменить</button>` : ''}</td></tr>`;
+    }).join('');
+    return `${head('Касса', 'Наличные подразделения: пополнения, расходы, выдачи под отчёт и возвраты',
+      `<a class="btn soft sm" href="/api/head/export?${new URLSearchParams({ type: 'cash', from: c.range.from, to: c.range.to })}" download>${ic('download', 16)} CSV</a>
+       <button class="btn soft" data-cash="recount">${ic('scale', 16)} Пересчёт</button><button class="btn soft" data-cash="withdraw">${ic('upload', 16)} Сдать</button>
+       <button class="btn soft" data-cash="expense">${ic('receipt', 16)} Расход</button><button class="btn" data-cash="topup">${ic('plus', 16)} Пополнить</button>`)}
+      <div class="grid-kpi">
+        ${kpi('В кассе сейчас', money(c.balance), 'наличные на руках у руководителя', 'ink')}
+        ${kpi('Пришло за период', `+${money(c.totals.in)}`, `на начало ${money(c.opening)}`, '', 'var(--c-in)')}
+        ${kpi('Ушло за период', `−${money(c.totals.out)}`, `на конец ${money(c.closing)}`, '', 'var(--c-out)')}
+        ${kpi('Под отчётом из кассы', money(c.under_report.s), c.under_report.n ? `${c.under_report.n} заявк. ждут отчёта` : 'всё отчитано')}
+      </div>
+      <div class="filters">
+        <div class="tabs">${presets.map(([t, f, to]) => `<a href="${link({ from: f, to })}" class="${c.range.from === f && c.range.to === to ? 'on' : ''}">${t}</a>`).join('')}</div>
+        <div class="tabs">${kindTabs.map(([k, t]) => `<a href="${link({ kind: k })}" class="${(q.kind || '') === k ? 'on' : ''}">${t}</a>`).join('')}</div>
+      </div>
+      <div class="card flush">${rows ? `<div class="table-wrap"><table class="t resp"><thead><tr><th class="hide-m">Дата</th><th>Операция</th><th class="r">Сумма</th><th class="r hide-m">Остаток</th><th></th></tr></thead>
+        <tbody>${rows}</tbody></table></div>` : `<div class="empty">${ic('wallet', 32)}За период операций нет<p class="small">Начните с кнопки «Пополнить» — внесите остаток, который сейчас есть в кассе.</p></div>`}</div>
+      <div class="note" style="margin-top:16px">${ic('info')}<span>Выдача денег под отчёт, возврат остатка при проведении отчёта и подтверждённые доходы наличными попадают в кассу автоматически. Расход из кассы сразу учитывается в аналитике. Ничего не удаляется: ошибочную операцию можно отменить с причиной — она останется в списке зачёркнутой.</span></div>`;
+  }
+  pageCash.after = () => {
+    $$('[data-cash]').forEach((b) => b.onclick = () => cashDialog(b.dataset.cash));
+    $$('[data-void]').forEach((b) => b.onclick = async () => {
+      const res = await ask({ title: 'Отменить операцию?', text: 'Операция останется в списке зачёркнутой, остаток пересчитается.', fields: [{ name: 'reason', label: 'Причина', type: 'text', required: true }], ok: 'Отменить операцию', danger: true });
+      if (!res) return;
+      try { await post(`/api/head/cash/${b.dataset.void}/void`, res); toast('Операция отменена'); render(); } catch (e) { fail(e); }
+    });
+    $$('[data-view]').forEach((t) => t.onclick = () => modal(`<div class="row between"><h2>Чек</h2><button class="icon-btn" data-close>${ic('x')}</button></div><img class="viewer-img" src="/api/files/${t.dataset.view}" alt="">`, { wide: true }));
+  };
+  async function cashDialog(kind) {
+    const s = S.settings; const bal = cashData ? cashData.balance : 0;
+    const date = { name: 'date', label: 'Дата', type: 'date', value: today() };
+    const cfg = {
+      topup: { title: 'Пополнить кассу', ok: 'Пополнить', fields: [{ name: 'amount', label: `Сумма, ${cur()}`, type: 'money', required: true }, date, { name: 'comment', label: 'Откуда деньги', type: 'text', placeholder: 'Например: из офиса, от директора' }] },
+      expense: { title: 'Расход из кассы', ok: 'Записать расход', text: `В кассе ${money(bal)}. Для покупок материалов лучше заявка — тогда работает контроль цен.`, fields: [
+        { name: 'amount', label: `Сумма, ${cur()}`, type: 'money', required: true }, { name: 'comment', label: 'На что потрачено', type: 'text', required: true, placeholder: 'Например: вода, такси за деталью' },
+        { name: 'category', label: 'Категория', type: 'select', value: 'Прочее', options: s.categories.map((c) => [c, c]) },
+        { name: 'object', label: 'Объект', type: 'select', value: '', options: [['', '— не выбран —'], ...s.objects.map((o) => [o, o])] }, date,
+        { name: 'file', label: 'Чек (необязательно)', type: 'file' }] },
+      withdraw: { title: 'Сдать из кассы', ok: 'Записать', text: `В кассе ${money(bal)}. Например, сдали выручку в офис или инкассация.`, fields: [{ name: 'amount', label: `Сумма, ${cur()}`, type: 'money', required: true }, { name: 'comment', label: 'Кому / куда сдали', type: 'text', required: true }, date] },
+      recount: { title: 'Пересчёт кассы', ok: 'Сверить', text: `По учёту в кассе <b>${money(bal)}</b>. Пересчитайте деньги и введите фактическую сумму — разница запишется как излишек или недостача.`, fields: [{ name: 'counted', label: `Фактически в кассе, ${cur()}`, type: 'money', required: true }, { name: 'comment', label: 'Комментарий (необязательно)', type: 'text' }] },
+    }[kind];
+    const res = await ask({ title: cfg.title, text: cfg.text, fields: cfg.fields, ok: cfg.ok });
+    if (!res) return;
+    try {
+      const out = await post('/api/head/cash', { kind, ...res });
+      toast(kind === 'recount' ? (out.diff ? `Записано: ${out.diff > 0 ? 'излишек' : 'недостача'} ${money(Math.abs(out.diff))}` : 'Сходится — расхождений нет') : `Готово. В кассе ${money(out.balance)}`);
+      render();
+    } catch (e) { fail(e); }
+  }
+
   // ================= Профиль, «Ещё» =================
   function pageProfile() {
     const theme = document.documentElement.dataset.theme;
@@ -1265,7 +1354,7 @@
     
   };
   function pageMore() {
-    const links = [['/incomes', 'coins', 'Доходы'], ['/journal', 'history', 'Журнал'], ['/team', 'users', 'Команда'], ['/settings', 'sliders', 'Настройки'], ['/new', 'plus', 'Новая заявка'], ['/profile', 'user', 'Профиль']];
+    const links = [['/cash', 'wallet', 'Касса'], ['/incomes', 'coins', 'Доходы'], ['/journal', 'history', 'Журнал'], ['/team', 'users', 'Команда'], ['/settings', 'sliders', 'Настройки'], ['/new', 'plus', 'Новая заявка'], ['/profile', 'user', 'Профиль']];
     return `${head('Ещё')}<div class="card flush"><div class="list">${links.map(([p, i, t]) => `<a class="li" href="#${p}"><div class="t1 row">${ic(i)} ${t}</div><div>${ic('chevronRight')}</div></a>`).join('')}</div></div>`;
   }
 

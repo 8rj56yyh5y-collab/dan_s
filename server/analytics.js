@@ -24,9 +24,10 @@ function range(q) {
 function totals(fromTs, toTs, fromD, toD) {
   const exp = db.prepare("SELECT COALESCE(SUM(actual_total),0) s, COUNT(*) n FROM requests WHERE status='closed' AND closed_at BETWEEN ? AND ?").get(fromTs, toTs);
   const del = db.prepare('SELECT COALESCE(SUM(amount),0) s FROM delivery_costs WHERE ts BETWEEN ? AND ?').get(fromTs, toTs).s;
+  const cash = db.prepare("SELECT COALESCE(SUM(amount),0) s FROM cash_ops WHERE kind = 'expense' AND removed_at IS NULL AND ts BETWEEN ? AND ?").get(fromTs, toTs).s;
   const inc = db.prepare("SELECT COALESCE(SUM(amount),0) s, COUNT(*) n FROM incomes WHERE status='confirmed' AND date BETWEEN ? AND ?").get(fromD, toD);
-  const expenses = exp.s + del;
-  return { expenses: round2(expenses), delivery: round2(del), expense_count: exp.n, income: round2(inc.s), income_count: inc.n, profit: round2(inc.s - expenses) };
+  const expenses = exp.s + del + cash;
+  return { expenses: round2(expenses), delivery: round2(del), cash_expenses: round2(cash), expense_count: exp.n, income: round2(inc.s), income_count: inc.n, profit: round2(inc.s - expenses) };
 }
 
 function overview(q) {
@@ -51,7 +52,7 @@ function overview(q) {
   for (const row of db.prepare("SELECT closed_at, actual_total FROM requests WHERE status='closed' AND closed_at >= ?").all(m0)) {
     const k = ym(row.closed_at); if (byMonth[k]) byMonth[k].expenses += row.actual_total || 0;
   }
-  for (const row of db.prepare('SELECT ts, amount FROM delivery_costs WHERE ts >= ?').all(m0)) {
+  for (const row of db.prepare("SELECT ts, amount FROM delivery_costs WHERE ts >= ? UNION ALL SELECT ts, amount FROM cash_ops WHERE kind = 'expense' AND removed_at IS NULL AND ts >= ?").all(m0, m0)) {
     const k = ym(row.ts); if (byMonth[k]) byMonth[k].expenses += row.amount;
   }
   for (const row of db.prepare("SELECT date, amount FROM incomes WHERE status='confirmed' AND date >= ?").all(`${months[0]}-01`)) {
@@ -62,7 +63,12 @@ function overview(q) {
   const closedIn = "status='closed' AND closed_at BETWEEN ? AND ?";
   const byCategory = db.prepare(`SELECT COALESCE(NULLIF(category,''),'Без категории') k, SUM(actual_total) s, COUNT(*) n FROM requests WHERE ${closedIn} GROUP BY k ORDER BY s DESC`).all(r.fromTs, r.toTs);
   const delIn = db.prepare('SELECT COALESCE(SUM(amount),0) s, COUNT(*) n FROM delivery_costs WHERE ts BETWEEN ? AND ?').get(r.fromTs, r.toTs);
-  if (delIn.s) { byCategory.push({ k: 'Доставка', s: delIn.s, n: delIn.n }); byCategory.sort((a, b) => b.s - a.s); }
+  if (delIn.s) byCategory.push({ k: 'Доставка', s: delIn.s, n: delIn.n });
+  for (const row of db.prepare("SELECT COALESCE(NULLIF(category,''),'Прочее') k, SUM(amount) s, COUNT(*) n FROM cash_ops WHERE kind = 'expense' AND removed_at IS NULL AND ts BETWEEN ? AND ? GROUP BY k").all(r.fromTs, r.toTs)) {
+    const x = byCategory.find((y) => y.k === row.k);
+    if (x) { x.s += row.s; x.n += row.n; } else byCategory.push(row);
+  }
+  byCategory.sort((a, b) => b.s - a.s);
   const byChannel = db.prepare(`SELECT channel k, SUM(actual_total) s, COUNT(*) n FROM requests WHERE ${closedIn} GROUP BY k`).all(r.fromTs, r.toTs);
   const byStaff = db.prepare(`SELECT u.id, u.name k, SUM(r.actual_total) s, COUNT(*) n,
       SUM(COALESCE(r.approved_amount, r.amount)) planned
@@ -79,6 +85,7 @@ function overview(q) {
   const touch = (k) => { if (!objMap.has(k)) objMap.set(k, { k, income: 0, expenses: 0 }); return objMap.get(k); };
   for (const row of db.prepare(`SELECT COALESCE(NULLIF(object,''),'Без объекта') k, SUM(actual_total) s FROM requests WHERE ${closedIn} GROUP BY k`).all(r.fromTs, r.toTs)) touch(row.k).expenses = round2(row.s);
   for (const row of db.prepare("SELECT COALESCE(NULLIF(object,''),'Без объекта') k, SUM(amount) s FROM delivery_costs WHERE ts BETWEEN ? AND ? GROUP BY k").all(r.fromTs, r.toTs)) touch(row.k).expenses = round2(touch(row.k).expenses + row.s);
+  for (const row of db.prepare("SELECT COALESCE(NULLIF(object,''),'Без объекта') k, SUM(amount) s FROM cash_ops WHERE kind = 'expense' AND removed_at IS NULL AND ts BETWEEN ? AND ? GROUP BY k").all(r.fromTs, r.toTs)) touch(row.k).expenses = round2(touch(row.k).expenses + row.s);
   for (const row of db.prepare("SELECT COALESCE(NULLIF(object,''),'Без объекта') k, SUM(amount) s FROM incomes WHERE status='confirmed' AND date BETWEEN ? AND ? GROUP BY k").all(r.from, r.to)) touch(row.k).income = round2(row.s);
   const byObject = [...objMap.values()].map((o) => ({ ...o, profit: round2(o.income - o.expenses) })).sort((a, b) => b.income + b.expenses - (a.income + a.expenses));
 
@@ -101,6 +108,7 @@ function overview(q) {
     income_by_category: fix(incomeByCategory), top_items: fix(topItems).map((x) => ({ ...x, qty: round2(x.qty) })),
     approval_hours: appr ? round2(appr / 3600e3) : null, saved: round2(saved),
     advances: advances(),
+    cash_balance: round2(db.prepare("SELECT COALESCE(SUM(CASE direction WHEN 'in' THEN amount ELSE -amount END),0) s FROM cash_ops WHERE removed_at IS NULL").get().s),
   };
 }
 

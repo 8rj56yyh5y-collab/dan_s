@@ -146,6 +146,30 @@ CREATE VIEW IF NOT EXISTS delivery_costs AS
   FROM deliveries d JOIN requests r ON r.id = d.request_id
   WHERE d.removed_at IS NULL AND r.status = 'closed';
 
+-- Касса подразделения: наличные. Остаток = приход − расход (без отменённых операций).
+-- kind: topup — пополнение, income — доход наличными, return — возврат остатка подотчёта,
+--       issue — выдача под отчёт, expense — расход из кассы, withdraw — сдача/инкассация, recount — пересчёт.
+-- Записи не удаляются: отмена помечает removed_at и пишется в журнал.
+CREATE TABLE IF NOT EXISTS cash_ops (
+  id INTEGER PRIMARY KEY,
+  ts INTEGER NOT NULL,
+  direction TEXT NOT NULL CHECK (direction IN ('in','out')),
+  kind TEXT NOT NULL CHECK (kind IN ('topup','income','return','issue','expense','withdraw','recount')),
+  amount REAL NOT NULL CHECK (amount > 0),
+  category TEXT NOT NULL DEFAULT '',
+  object TEXT NOT NULL DEFAULT '',
+  comment TEXT NOT NULL DEFAULT '',
+  request_id INTEGER REFERENCES requests(id),
+  income_id INTEGER REFERENCES incomes(id),
+  file_id INTEGER REFERENCES files(id),
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  created_at INTEGER NOT NULL,
+  removed_at INTEGER, removed_by INTEGER, remove_reason TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS cash_ts ON cash_ops(ts);
+CREATE INDEX IF NOT EXISTS cash_req ON cash_ops(request_id);
+CREATE INDEX IF NOT EXISTS cash_inc ON cash_ops(income_id);
+
 -- Запросы на корректировку после окончания окна правки.
 CREATE TABLE IF NOT EXISTS corrections (
   id INTEGER PRIMARY KEY,
@@ -179,6 +203,14 @@ CREATE TABLE IF NOT EXISTS settings (
   value TEXT NOT NULL
 );
 `);
+
+// Новые колонки в уже существующих базах (ALTER TABLE не поддерживает IF NOT EXISTS).
+function addColumn(table, column, ddl) {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
+  if (!cols.includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+}
+addColumn('files', 'cash_op_id', 'cash_op_id INTEGER REFERENCES cash_ops(id)');
+addColumn('requests', 'issued_from_cash', 'issued_from_cash INTEGER NOT NULL DEFAULT 0');
 
 const DEFAULT_SETTINGS = {
   edit_hours: 2,               // окно самостоятельной правки
