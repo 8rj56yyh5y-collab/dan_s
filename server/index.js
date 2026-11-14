@@ -9,6 +9,7 @@ const auth = require('./auth');
 const L = require('./logic');
 const A = require('./analytics');
 const ai = require('./ai');
+const cash = require('./cash');
 
 const { HttpError, str } = L;
 const PORT = Number(process.env.PORT) || 3000;
@@ -309,6 +310,7 @@ function exportCsv(q) {
     return csv([['Номер', 'Дата', 'Что', 'Клиент', 'Объект', 'Категория', 'Сумма', 'Оплата', 'Статус', 'Внёс'],
       ...rows.map((r) => [r.number, r.date, r.title, r.client, r.object, r.category, nf(r.amount), r.method, r.status_text, r.user_name])]);
   }
+  if (q.type === 'cash') return csv(cash.csvRows(q));
   if (q.type === 'items') {
     const rows = db.prepare(`SELECT r.id, r.closed_at, r.object, r.category, u.name, i.name item, i.qty, i.unit, i.price, i.actual_qty, i.actual_price, i.shop, i.url
       FROM request_items i JOIN requests r ON r.id = i.request_id JOIN users u ON u.id = r.user_id WHERE r.status='closed' ORDER BY r.closed_at DESC`).all();
@@ -433,6 +435,9 @@ async function api(req, res, url) {
     if ((mt = p.match(/^\/api\/head\/users\/(\d+)$/)) && m === 'PUT') { updateUser(user, mt[1], body); return ok(); }
     if ((mt = p.match(/^\/api\/head\/users\/(\d+)\/reset$/)) && m === 'POST') return ok(resetPassword(user, mt[1]));
     if (p === '/api/head/settings' && m === 'PUT') return ok(updateSettings(user, body));
+    if (p === '/api/head/cash' && m === 'GET') return ok(cash.report(q));
+    if (p === '/api/head/cash' && m === 'POST') { const r = cash.createOp(user, body); return ok({ ...r, balance: L.cashBalance() }); }
+    if ((mt = p.match(/^\/api\/head\/cash\/(\d+)\/void$/)) && m === 'POST') { cash.removeOp(user, mt[1], body.reason); return ok({ balance: L.cashBalance() }); }
     if (p === '/api/head/export' && m === 'GET') {
       const data = exportCsv(q);
       res.writeHead(200, { ...SECURITY_HEADERS, 'Content-Type': 'text/csv; charset=utf-8', 'Cache-Control': 'no-store',

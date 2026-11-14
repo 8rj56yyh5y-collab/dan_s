@@ -109,13 +109,39 @@ test('полный цикл заявки и защита', async () => {
   // повтор того же чека в другой заявке ловится
   const id2 = (await eng('POST', '/api/requests', { kind: 'money', title: 'На расходники', purpose: 'Электроды', amount: 500 })).data.id;
   await head('POST', `/api/requests/${id2}/action`, { action: 'approve' });
-  await head('POST', `/api/requests/${id2}/action`, { action: 'issue', issued_amount: 500 });
+  // касса пуста — выдать из неё нельзя; пополняем и выдаём
+  assert.equal((await head('POST', `/api/requests/${id2}/action`, { action: 'issue', issued_amount: 500 })).status, 409);
+  assert.equal((await eng('POST', '/api/head/cash', { kind: 'topup', amount: 1000 })).status, 403);
+  assert.equal((await eng('GET', '/api/head/cash')).status, 403);
+  assert.equal((await head('POST', '/api/head/cash', { kind: 'topup', amount: 1000, comment: 'Из офиса' })).data.balance, 1000);
+  assert.equal((await head('POST', `/api/requests/${id2}/action`, { action: 'issue', issued_amount: 500 })).status, 200);
+  assert.equal((await head('GET', '/api/head/cash')).data.balance, 500);
   await eng('PUT', `/api/requests/${id2}`, { part: 'report', items: [{ name: 'Электроды', qty: 1, actual_price: 450 }], returned_amount: 50 });
   await eng('POST', '/api/files', { request_id: id2, kind: 'receipt', name: 'тот-же.png', data: PNG });
   await eng('POST', `/api/requests/${id2}/action`, { action: 'submit_report' });
   const d2 = (await head('GET', `/api/requests/${id2}`)).data;
   assert.ok(d2.flags.some((x) => x.code === 'dup_receipt'));
   await head('POST', `/api/requests/${id2}/action`, { action: 'close' });
+  // остаток подотчёта (50) вернулся в кассу при проведении
+  let cr = (await head('GET', '/api/head/cash')).data;
+  assert.equal(cr.balance, 550);
+  assert.ok(cr.items.some((o) => o.kind === 'return' && o.amount === 50));
+  // ручные операции: расход без описания и больше остатка — нельзя
+  assert.equal((await head('POST', '/api/head/cash', { kind: 'expense', amount: 100 })).status, 400);
+  assert.equal((await head('POST', '/api/head/cash', { kind: 'withdraw', amount: 9999 })).status, 409);
+  const ce = await head('POST', '/api/head/cash', { kind: 'expense', amount: 100, category: 'Материалы', comment: 'Краска', file: { name: 'чек.png', data: PNG } });
+  assert.equal(ce.data.balance, 450);
+  // пересчёт: по факту 440 → недостача 10
+  const rc = await head('POST', '/api/head/cash', { kind: 'recount', counted: 440 });
+  assert.equal(rc.data.diff, -10);
+  assert.equal(rc.data.balance, 440);
+  // автоматическую операцию отменить нельзя, ручную — с причиной
+  const issueOp = (await head('GET', '/api/head/cash')).data.items.find((o) => o.kind === 'issue');
+  assert.equal((await head('POST', `/api/head/cash/${issueOp.id}/void`, { reason: 'x' })).status, 409);
+  const expOverview = (await head('GET', '/api/head/overview')).data.current;
+  assert.equal(expOverview.cash_expenses, 100);
+  assert.equal((await head('POST', `/api/head/cash/${ce.data.id}/void`, {})).status, 400);
+  assert.equal((await head('POST', `/api/head/cash/${ce.data.id}/void`, { reason: 'Ошибочно' })).data.balance, 540);
 
   // доставка: после проведения, без согласования; чужой и до согласования — нельзя
   const pend = (await eng('POST', '/api/requests', { kind: 'money', title: 'Ещё', purpose: 'x', amount: 100 })).data.id;
@@ -140,8 +166,10 @@ test('полный цикл заявки и защита', async () => {
   assert.equal(adv.balance, -80);
 
   // доход и аналитика (расходы = 315 + 450 по чекам + 80 доставка)
-  const inc = await eng('POST', '/api/incomes', { date: new Date().toISOString().slice(0, 10), title: 'Навес', amount: 5000 });
+  const inc = await eng('POST', '/api/incomes', { date: new Date().toISOString().slice(0, 10), title: 'Навес', amount: 5000, method: 'cash' });
   await head('POST', `/api/incomes/${inc.data.id}/action`, { action: 'confirm' });
+  // доход наличными попал в кассу
+  assert.equal((await head('GET', '/api/head/cash')).data.balance, 5540);
   const ov = (await head('GET', '/api/head/overview')).data;
   assert.equal(ov.current.income, 5000);
   assert.equal(ov.current.expenses, 845);

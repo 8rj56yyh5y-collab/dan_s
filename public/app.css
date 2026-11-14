@@ -403,3 +403,6 @@ textarea.input { min-height: 84px; }
   .auth-art p { display: none; }
   .auth-art .motto { font-size: .95rem; margin-top: 12px; }
 }
+.hide-d { display: none; }
+@media (max-width: 860px) { .hide-d { display: inline; } }
+@media (max-width: 860px) { .shell { background: none; } }
