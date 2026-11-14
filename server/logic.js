@@ -382,7 +382,11 @@ function addFile(user, { request_id, income_id, kind, name, data }) {
     if (!(inc.status === 'new' && Date.now() < inc.edit_until)) throw new HttpError(423, 'Время на правку вышло. Нужен запрос на корректировку.');
     owner = { request_id: null, income_id: inc.id };
   } else throw new HttpError(400, 'Не указано, к чему файл');
+  return storeFile(user, owner, k, name, data);
+}
 
+// Сохраняет файл на диск и в базу. Права проверяет вызывающая функция.
+function storeFile(user, owner, k, name, data) {
   const b64 = String(data || '').replace(/^data:[^;]+;base64,/, '');
   const buf = Buffer.from(b64, 'base64');
   if (!buf.length) throw new HttpError(400, 'Пустой файл');
@@ -424,6 +428,49 @@ function removeFile(user, id) {
   // Сам файл остаётся на диске (для истории), отвязываем его и пишем в журнал.
   db.prepare('UPDATE files SET request_id = NULL, income_id = NULL, kind = ? WHERE id = ?').run('removed', f.id);
   logEvent(user.id, f.request_id ? 'request' : 'income', f.request_id || f.income_id, 'file_removed', { file_id: f.id, name: f.orig_name });
+}
+
+// ---------- доставка ----------
+const DELIVERY_STATUSES = ['approved', 'issued', 'review', 'report_revision', 'closed'];
+const CARRIERS = ['Нова пошта', 'Укрпошта', 'Meest', 'Курьер', 'Другое'];
+const PAID_BY = { advance: 'Из выданных денег', self: 'Оплатил сам — вернуть', company: 'Оплатила компания' };
+
+const deliveriesOf = (rid) => db.prepare(`SELECT d.*, u.name user_name FROM deliveries d JOIN users u ON u.id = d.user_id
+  WHERE d.request_id = ? AND d.removed_at IS NULL ORDER BY d.id`).all(rid);
+const deliveryTotal = (rid) => round2(db.prepare('SELECT COALESCE(SUM(amount),0) s FROM deliveries WHERE request_id = ? AND removed_at IS NULL').get(rid).s);
+
+function canAddDelivery(user, r) {
+  return (user.role === 'head' || r.user_id === user.id) && DELIVERY_STATUSES.includes(r.status);
+}
+
+function addDelivery(user, rid, body) {
+  const r = requestFor(user, rid);
+  if (!(user.role === 'head' || r.user_id === user.id)) throw new HttpError(403, 'Доставку добавляет автор заявки или руководитель');
+  if (!DELIVERY_STATUSES.includes(r.status)) throw new HttpError(409, 'Доставку можно добавить после согласования заявки');
+  const amount = money(body.amount, { allowZero: false, max: 1e6 });
+  if (amount == null) throw new HttpError(400, 'Укажите сумму доставки');
+  const carrier = CARRIERS.includes(body.carrier) ? body.carrier : 'Другое';
+  const ttn = str(body.ttn, 40).replace(/\s/g, '');
+  const paid_by = PAID_BY[body.paid_by] ? body.paid_by : 'self';
+  return tx(() => {
+    let fileId = null;
+    if (body.file?.data) fileId = storeFile(user, { request_id: r.id, income_id: null }, 'delivery', body.file.name, body.file.data);
+    const res = db.prepare(`INSERT INTO deliveries (request_id, user_id, amount, carrier, ttn, paid_by, comment, file_id, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(r.id, user.id, amount, carrier, ttn, paid_by, str(body.comment, 500), fileId, Date.now());
+    const id = Number(res.lastInsertRowid);
+    logEvent(user.id, 'request', r.id, 'delivery_added', { amount, carrier, ttn, paid_by: PAID_BY[paid_by], after_close: r.status === 'closed' });
+    return id;
+  });
+}
+
+function removeDelivery(user, id) {
+  const d = db.prepare('SELECT * FROM deliveries WHERE id = ? AND removed_at IS NULL').get(Number(id));
+  if (!d) throw new HttpError(404, 'Доставка не найдена');
+  const r = requestFor(user, d.request_id);
+  const own = d.user_id === user.id && Date.now() - d.created_at < editMs();
+  if (!(user.role === 'head' || own)) throw new HttpError(423, 'Удалить доставку можно в течение времени на правку. Дальше — через руководителя.');
+  db.prepare('UPDATE deliveries SET removed_at = ?, removed_by = ? WHERE id = ?').run(Date.now(), user.id, d.id);
+  logEvent(user.id, 'request', r.id, 'delivery_removed', { amount: d.amount, carrier: d.carrier, ttn: d.ttn });
 }
 
 // ---------- доходы ----------
@@ -589,6 +636,8 @@ function flagsForRequest(r, items, files, settings = getSettings()) {
       } catch { /* битый json */ }
     }
   }
+  const del = deliveryTotal(r.id);
+  if (del && r.actual_total > 0 && del > r.actual_total * 0.25) flags.push({ level: 'low', code: 'delivery_high', text: `Доставка ${fm(del)} — ${Math.round((del / r.actual_total) * 100)}% от стоимости товара` });
   if (r.changed_after_approval) flags.push({ level: 'mid', code: 'changed_after_approval', text: 'Заявку меняли после согласования (см. историю)' });
   if (r.status === 'issued') {
     const issuedEv = db.prepare("SELECT ts FROM events WHERE entity='request' AND entity_id=? AND action='issued' ORDER BY id DESC LIMIT 1").get(r.id);
@@ -600,6 +649,7 @@ function flagsForRequest(r, items, files, settings = getSettings()) {
 }
 
 module.exports = {
+  DELIVERY_STATUSES, CARRIERS, PAID_BY, deliveriesOf, deliveryTotal, canAddDelivery, addDelivery, removeDelivery,
   HttpError, STATUS, INCOME_STATUS, str, money, round2, isDate, reqNumber, incNumber, median,
   canSee, loadRequest, requestFor, canEditPlan, canEditReport, itemsOf, planTotal, actualTotal,
   createRequest, updateRequest, staffAction, headAction,

@@ -23,8 +23,10 @@ function range(q) {
 
 function totals(fromTs, toTs, fromD, toD) {
   const exp = db.prepare("SELECT COALESCE(SUM(actual_total),0) s, COUNT(*) n FROM requests WHERE status='closed' AND closed_at BETWEEN ? AND ?").get(fromTs, toTs);
+  const del = db.prepare('SELECT COALESCE(SUM(amount),0) s FROM delivery_costs WHERE ts BETWEEN ? AND ?').get(fromTs, toTs).s;
   const inc = db.prepare("SELECT COALESCE(SUM(amount),0) s, COUNT(*) n FROM incomes WHERE status='confirmed' AND date BETWEEN ? AND ?").get(fromD, toD);
-  return { expenses: round2(exp.s), expense_count: exp.n, income: round2(inc.s), income_count: inc.n, profit: round2(inc.s - exp.s) };
+  const expenses = exp.s + del;
+  return { expenses: round2(expenses), delivery: round2(del), expense_count: exp.n, income: round2(inc.s), income_count: inc.n, profit: round2(inc.s - expenses) };
 }
 
 function overview(q) {
@@ -49,6 +51,9 @@ function overview(q) {
   for (const row of db.prepare("SELECT closed_at, actual_total FROM requests WHERE status='closed' AND closed_at >= ?").all(m0)) {
     const k = ym(row.closed_at); if (byMonth[k]) byMonth[k].expenses += row.actual_total || 0;
   }
+  for (const row of db.prepare('SELECT ts, amount FROM delivery_costs WHERE ts >= ?').all(m0)) {
+    const k = ym(row.ts); if (byMonth[k]) byMonth[k].expenses += row.amount;
+  }
   for (const row of db.prepare("SELECT date, amount FROM incomes WHERE status='confirmed' AND date >= ?").all(`${months[0]}-01`)) {
     const k = row.date.slice(0, 7); if (byMonth[k]) byMonth[k].income += row.amount;
   }
@@ -56,15 +61,24 @@ function overview(q) {
 
   const closedIn = "status='closed' AND closed_at BETWEEN ? AND ?";
   const byCategory = db.prepare(`SELECT COALESCE(NULLIF(category,''),'Без категории') k, SUM(actual_total) s, COUNT(*) n FROM requests WHERE ${closedIn} GROUP BY k ORDER BY s DESC`).all(r.fromTs, r.toTs);
+  const delIn = db.prepare('SELECT COALESCE(SUM(amount),0) s, COUNT(*) n FROM delivery_costs WHERE ts BETWEEN ? AND ?').get(r.fromTs, r.toTs);
+  if (delIn.s) { byCategory.push({ k: 'Доставка', s: delIn.s, n: delIn.n }); byCategory.sort((a, b) => b.s - a.s); }
   const byChannel = db.prepare(`SELECT channel k, SUM(actual_total) s, COUNT(*) n FROM requests WHERE ${closedIn} GROUP BY k`).all(r.fromTs, r.toTs);
   const byStaff = db.prepare(`SELECT u.id, u.name k, SUM(r.actual_total) s, COUNT(*) n,
       SUM(COALESCE(r.approved_amount, r.amount)) planned
     FROM requests r JOIN users u ON u.id = r.user_id WHERE r.status='closed' AND r.closed_at BETWEEN ? AND ? GROUP BY u.id ORDER BY s DESC`).all(r.fromTs, r.toTs);
+  // Доставка — в расход сотрудника, чья заявка (поле «Факт»), план не меняется.
+  for (const row of db.prepare('SELECT d.req_user id, u.name k, SUM(d.amount) s FROM delivery_costs d JOIN users u ON u.id = d.req_user WHERE d.ts BETWEEN ? AND ? GROUP BY d.req_user').all(r.fromTs, r.toTs)) {
+    const x = byStaff.find((y) => y.id === row.id);
+    if (x) { x.s += row.s; x.delivery = round2(row.s); } else byStaff.push({ id: row.id, k: row.k, s: row.s, n: 0, planned: 0, delivery: round2(row.s) });
+  }
+  byStaff.sort((a, b) => b.s - a.s);
 
   // Объекты: доход − расход = прибыль объекта.
   const objMap = new Map();
   const touch = (k) => { if (!objMap.has(k)) objMap.set(k, { k, income: 0, expenses: 0 }); return objMap.get(k); };
   for (const row of db.prepare(`SELECT COALESCE(NULLIF(object,''),'Без объекта') k, SUM(actual_total) s FROM requests WHERE ${closedIn} GROUP BY k`).all(r.fromTs, r.toTs)) touch(row.k).expenses = round2(row.s);
+  for (const row of db.prepare("SELECT COALESCE(NULLIF(object,''),'Без объекта') k, SUM(amount) s FROM delivery_costs WHERE ts BETWEEN ? AND ? GROUP BY k").all(r.fromTs, r.toTs)) touch(row.k).expenses = round2(touch(row.k).expenses + row.s);
   for (const row of db.prepare("SELECT COALESCE(NULLIF(object,''),'Без объекта') k, SUM(amount) s FROM incomes WHERE status='confirmed' AND date BETWEEN ? AND ? GROUP BY k").all(r.from, r.to)) touch(row.k).income = round2(row.s);
   const byObject = [...objMap.values()].map((o) => ({ ...o, profit: round2(o.income - o.expenses) })).sort((a, b) => b.income + b.expenses - (a.income + a.expenses));
 
@@ -91,6 +105,7 @@ function overview(q) {
 }
 
 // Подотчёт: сколько денег у сотрудника на руках без отчёта.
+// Доставка «из выданных» уменьшает остаток на руках, «оплатил сам» — компания должна сотруднику.
 function advances(userId) {
   const where = userId ? 'AND r.user_id = ?' : '';
   const args = userId ? [userId] : [];
@@ -99,7 +114,15 @@ function advances(userId) {
       SUM(CASE WHEN r.status IN ('issued','review','report_revision') THEN 1 ELSE 0 END) open_count,
       SUM(CASE WHEN r.status='closed' AND r.issued_amount IS NOT NULL THEN r.issued_amount - COALESCE(r.actual_total,0) - COALESCE(r.returned_amount,0) ELSE 0 END) closed_diff
     FROM requests r JOIN users u ON u.id = r.user_id WHERE r.issued_amount IS NOT NULL ${where} GROUP BY u.id ORDER BY open_amount DESC`).all(...args);
-  return rows.map((x) => ({ ...x, open_amount: round2(x.open_amount || 0), closed_diff: round2(x.closed_diff || 0), balance: round2((x.open_amount || 0) + (x.closed_diff || 0)) }));
+  const dels = db.prepare(`SELECT r.user_id id, u.name, SUM(d.amount) s FROM deliveries d JOIN requests r ON r.id = d.request_id JOIN users u ON u.id = r.user_id
+    WHERE d.removed_at IS NULL AND d.paid_by IN ('advance','self') AND r.status NOT IN ('rejected','cancelled') ${where} GROUP BY r.user_id`).all(...args);
+  for (const d of dels) {
+    const x = rows.find((y) => y.id === d.id);
+    if (x) x.delivery = d.s; else rows.push({ id: d.id, name: d.name, open_amount: 0, open_count: 0, closed_diff: 0, delivery: d.s });
+  }
+  return rows.map((x) => ({ ...x, open_amount: round2(x.open_amount || 0), closed_diff: round2(x.closed_diff || 0), delivery: round2(x.delivery || 0),
+    balance: round2((x.open_amount || 0) + (x.closed_diff || 0) - (x.delivery || 0)) }))
+    .filter((x) => x.balance !== 0 || x.open_count).sort((a, b) => b.balance - a.balance);
 }
 
 // Справочник цен: все купленные позиции, разброс цен, кто и где покупал.
