@@ -421,7 +421,7 @@
       <td><b>${esc(x.title)}</b><div class="faint xs">${esc(x.number)} · ${kindText(x)}${x.object ? ` · ${esc(x.object)}` : ''}</div></td>
       ${isHead() ? `<td class="hide-m">${esc(x.user_name)}</td>` : ''}
       <td class="hide-m">${dOnly(x.created_at)}</td><td>${pill(x.status, x.status_text)}</td>
-      <td class="r num hide-m">${money(x.approved_amount ?? x.amount)}</td><td class="r num"><b>${x.actual_total != null ? money(x.actual_total) : '—'}</b></td></tr>`).join('');
+      <td class="r num hide-m">${money(x.approved_amount ?? x.amount)}</td><td class="r num"><b>${x.actual_total != null || x.delivery_total ? money((x.actual_total || 0) + x.delivery_total) : '—'}</b>${x.delivery_total ? `<div class="faint xs">вкл. доставку ${money(x.delivery_total)}</div>` : ''}</td></tr>`).join('');
     const users = isHead() ? (await api('/api/head/users')).items.filter((u) => u.role === 'staff' || u.requests) : [];
     return `${head(isHead() ? 'Заявки' : 'Мои заявки', `${data.items.length} шт. на сумму ${money(total)}`, `${isHead() ? `<a class="btn soft" href="/api/head/export?type=requests&${params}" download>${ic('download')} CSV</a>` : ''}<a class="btn" href="#/new">${ic('plus')} Новая заявка</a>`)}
       <div class="tabs" style="margin-bottom:14px">${tabs.map(([s, t, n]) => `<a href="${link(s)}" class="${status === s ? 'on' : ''}">${t}${n ? ` <span class="faint">${n}</span>` : ''}</a>`).join('')}</div>
@@ -620,6 +620,7 @@
               <input type="file" id="file-in" accept="image/*,application/pdf" multiple hidden></label>` : ''}
             <div id="ai-out"></div>
           </div>
+          ${deliveryCard(x)}
           <div class="card"><h3>История</h3>${timeline(x.events)}</div>
         </div>
         <div class="aside">
@@ -631,6 +632,7 @@
             ${x.actual_total != null ? `<div class="money-line"><span class="muted">Потрачено по чекам</span><b class="${x.actual_total > plan * 1.001 ? 'down' : ''}">${money(x.actual_total)}</b></div>` : ''}
             ${x.returned_amount != null ? `<div class="money-line"><span class="muted">Возвращено</span><b>${money(x.returned_amount)}</b></div>` : ''}
             ${x.issued_amount != null && x.actual_total != null ? `<div class="money-line"><span class="muted">Остаток / долг</span><b>${money(x.issued_amount - x.actual_total - (x.returned_amount || 0))}</b></div>` : ''}
+            ${x.delivery_total ? `<div class="money-line"><span class="muted">Доставка</span><b>${money(x.delivery_total)}</b></div><div class="money-line"><span class="muted">Итого с доставкой</span><b>${money((x.actual_total || 0) + x.delivery_total)}</b></div>` : ''}
             ${x.actual_total != null && plan ? `<div class="money-line"><span class="muted">Отклонение от плана</span><b class="${x.actual_total > plan ? 'down' : 'up'}">${x.actual_total > plan ? '+' : ''}${nf(pct(x.actual_total, plan), 1)}%</b></div>` : ''}
           </div>
           ${flags}
@@ -659,7 +661,7 @@
   }
   function fileCard(f, canDelete) {
     const img = f.mime.startsWith('image/') && f.mime !== 'image/heic';
-    const kinds = { receipt: 'Чек', invoice: 'Накладная / счёт', photo: 'Фото', other: 'Документ' };
+    const kinds = { receipt: 'Чек', invoice: 'Накладная / счёт', photo: 'Фото', other: 'Документ', delivery: 'Доставка' };
     return `<div class="file"><div class="thumb" data-view="${f.id}" data-mime="${esc(f.mime)}">${img ? `<img src="/api/files/${f.id}" alt="${esc(f.orig_name)}" loading="lazy">` : ic('doc', 36)}</div>
       <div class="meta"><b title="${esc(f.orig_name)}">${esc(f.orig_name)}</b><span class="faint">${kinds[f.kind] || 'Файл'} · ${nf(f.size / 1024, 0)} КБ</span>
         ${S.meta.ai && f.mime !== 'image/heic' ? `<button class="link-btn xs" data-ai="${f.id}" style="justify-self:start">${ic('sparkles', 13)} ${f.ai ? 'Результат ИИ' : 'Распознать ИИ'}</button>` : ''}</div>
@@ -672,7 +674,7 @@
     report_submitted: ['Отчёт отправлен', 'send', 'hl'], report_edited: ['Отчёт исправлен после отправки', 'edit', 'warn'], report_returned: ['Отчёт возвращён на доработку', 'refresh', 'warn'],
     closed: ['Проведено', 'check', 'hl'], cancelled: ['Отменено', 'xCircle', 'bad'], comment: ['Комментарий', 'chat', ''], file_added: ['Добавлен файл', 'upload', ''],
     file_removed: ['Файл убран', 'trash', 'warn'], correction_requested: ['Запрос на корректировку', 'unlock', 'warn'], correction_approved: ['Корректировка разрешена', 'unlock', 'hl'],
-    correction_rejected: ['В корректировке отказано', 'lock', 'bad'], ai_receipt: ['Чек распознан ИИ', 'sparkles', ''], confirmed: ['Подтверждено', 'checkCircle', 'hl'],
+    correction_rejected: ['В корректировке отказано', 'lock', 'bad'], ai_receipt: ['Чек распознан ИИ', 'sparkles', ''], delivery_added: ['Добавлена доставка', 'truck', 'hl'], delivery_removed: ['Доставка удалена', 'truck', 'warn'], confirmed: ['Подтверждено', 'checkCircle', 'hl'],
     login: ['Вход в систему', 'user', ''], login_failed: ['Неудачный вход', 'alert', 'bad'], logout: ['Выход', 'logout', ''], password_changed: ['Сменён пароль', 'lock', ''],
     password_reset: ['Пароль сброшен руководителем', 'lock', 'warn'], user_created: ['Добавлен сотрудник', 'users', 'hl'], user_updated: ['Изменён сотрудник', 'users', 'warn'],
     settings_updated: ['Изменены настройки', 'sliders', 'warn'], exported: ['Выгрузка CSV', 'download', ''], bootstrap: ['Система создана', 'sparkles', ''], demo_seeded: ['Загружены демо-данные', 'sparkles', ''],
@@ -697,6 +699,13 @@
     if (d.duplicate_of) bits.push(`<span class="down">тот же файл уже есть в ${esc(d.duplicate_of)}</span>`);
     if (d.total != null && e.action === 'ai_receipt') bits.push(`итог в чеке ${money(d.total)}`);
     if (d.until) bits.push(`до ${dt(d.until)}`);
+    if (e.action.startsWith('delivery')) {
+      bits.push(money(d.amount));
+      if (d.carrier) bits.push(esc(d.carrier));
+      if (d.ttn) bits.push(`ТТН ${esc(d.ttn)}`);
+      if (d.paid_by) bits.push(esc(d.paid_by));
+      if (d.after_close) bits.push('после проведения');
+    }
     if (d.ip && isHead()) bits.push(`IP ${esc(d.ip)}`);
     if (bits.length) out += `<div class="diff">${bits.join(' · ')}</div>`;
     return out;
@@ -731,10 +740,70 @@
     }
     return b.length ? `<div class="card stack">${b.join('')}</div>` : '';
   }
+  // ---- доставка ----
+  const CARRIERS = ['Нова пошта', 'Укрпошта', 'Meest', 'Курьер', 'Другое'];
+  const PAID_BY = { self: 'Оплатил сам — вернуть мне', advance: 'Из выданных денег', company: 'Оплатила компания' };
+  function trackUrl(d) {
+    if (!d.ttn) return '';
+    if (d.carrier === 'Нова пошта') return `https://novaposhta.ua/tracking/?cargo_number=${encodeURIComponent(d.ttn)}`;
+    if (d.carrier === 'Укрпошта') return `https://track.ukrposhta.ua/tracking_UA.html?barcode=${encodeURIComponent(d.ttn)}`;
+    return '';
+  }
+  function deliveryCard(x) {
+    if (!x.deliveries.length && !x.can_add_delivery) return '';
+    const rows = x.deliveries.map((d) => {
+      const url = trackUrl(d);
+      return `<div class="li" style="padding:12px 0"><div class="t1">${esc(d.carrier || 'Доставка')}${d.ttn ? ` · ${url ? `<a class="link" href="${esc(url)}" target="_blank" rel="noopener noreferrer nofollow">ТТН ${esc(d.ttn)}</a>` : `ТТН ${esc(d.ttn)}`}` : ''}</div>
+        <div class="amt">${money(d.amount)}</div>
+        <div class="t2" style="grid-column:1/-1"><span>${esc(d.paid_by_text)}</span><span>· ${esc(d.user_name)} · ${dt(d.created_at)}</span>${d.comment ? `<span>· ${esc(d.comment)}</span>` : ''}
+          ${d.file_id ? `<button class="link-btn xs" data-view="${d.file_id}" data-mime="${esc(x.files.find((f) => f.id === d.file_id)?.mime || '')}">${ic('receipt', 13)} чек доставки</button>` : ''}
+          ${d.can_remove ? `<button class="link-btn xs" data-deldel="${d.id}" style="color:var(--danger)">удалить</button>` : ''}</div></div>`;
+    }).join('');
+    return `<div class="card"><div class="card-h"><h3>Доставка</h3>${x.delivery_total ? `<b class="num">${money(x.delivery_total)}</b>` : ''}</div>
+      ${rows ? `<div class="list">${rows}</div>` : '<p class="muted small" style="margin:0 0 12px">Стоимость доставки часто известна только когда посылка приехала. Добавьте её здесь — согласование не нужно.</p>'}
+      ${x.can_add_delivery ? `<button class="btn soft${rows ? ' sm' : ''}" id="add-delivery" style="margin-top:${rows ? 10 : 0}px">${ic('plus', 16)} Добавить доставку</button>` : ''}</div>`;
+  }
+  function deliveryDialog(x) {
+    const hasAdvance = x.issued_amount != null;
+    modal(`<h2>Доставка к ${esc(x.number)}</h2><p class="muted" style="margin:0">Например, оплата Новой почты при получении. Сразу попадает в расходы, согласование не нужно.</p>
+      <form class="stack" id="df" novalidate>
+        <div class="form-grid">
+          <label class="field"><span>Сумма, ${cur()}</span><input class="input" name="amount" inputmode="decimal" required placeholder="0"></label>
+          <label class="field"><span>Перевозчик</span><select class="input" name="carrier">${CARRIERS.map((c) => `<option>${c}</option>`).join('')}</select></label>
+          <label class="field"><span>Номер ТТН (необязательно)</span><input class="input" name="ttn" inputmode="numeric" placeholder="20450000000000"></label>
+          <label class="field"><span>Кто оплатил</span><select class="input" name="paid_by">${Object.entries(PAID_BY).map(([k, v]) => `<option value="${k}" ${(hasAdvance ? 'advance' : 'self') === k ? 'selected' : ''}>${v}</option>`).join('')}</select></label>
+        </div>
+        <label class="field"><span>Комментарий</span><input class="input" name="comment" placeholder="Необязательно"></label>
+        <label class="field"><span>Чек или квитанция доставки (необязательно)</span><input class="input" type="file" name="file" accept="image/*,application/pdf" style="padding-top:8px"></label>
+        <div class="acts"><button type="button" class="btn soft" data-close>Отмена</button><button class="btn">Добавить</button></div>
+      </form>`, {
+      onOpen: (box, close) => {
+        const f = $('#df', box); setTimeout(() => f.amount.focus(), 30);
+        f.onsubmit = async (e) => {
+          e.preventDefault();
+          const amount = f.amount.value.replace(/\s/g, '').replace(',', '.');
+          if (!(Number(amount) > 0)) { f.amount.classList.add('bad'); f.amount.focus(); return; }
+          const btn = $('button.btn:not(.soft)', f); btn.disabled = true;
+          try {
+            const file = f.file.files[0];
+            const body = { amount, carrier: f.carrier.value, ttn: f.ttn.value, paid_by: f.paid_by.value, comment: f.comment.value };
+            if (file) body.file = { name: file.name, data: await prepareFile(file) };
+            await post(`/api/requests/${x.id}/deliveries`, body);
+            close(); toast('Доставка добавлена'); render();
+          } catch (err) { fail(err); btn.disabled = false; }
+        };
+      },
+    });
+  }
   function bindRequest() {
     const x = current;
     startTimers();
     $('#print').onclick = () => window.print();
+    if ($('#add-delivery')) $('#add-delivery').onclick = () => deliveryDialog(x);
+    $$('[data-deldel]').forEach((b) => b.onclick = async () => {
+      if (!(await confirmBox('Удалить доставку?', 'Запись об удалении останется в истории заявки.', 'Удалить', true))) return;
+      try { await api(`/api/deliveries/${b.dataset.deldel}`, { method: 'DELETE' }); toast('Доставка удалена'); render(); } catch (e) { fail(e); }
+    });
     $$('[data-h]').forEach((b) => b.onclick = () => headDo(x, b.dataset.h));
     $$('[data-s]').forEach((b) => b.onclick = () => staffDo(x, b.dataset.s));
     // отчёт

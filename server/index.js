@@ -86,7 +86,7 @@ function requestRow(r) {
     status: r.status, status_text: L.STATUS[r.status], amount: r.amount, approved_amount: r.approved_amount, issued_amount: r.issued_amount,
     actual_total: r.actual_total, user_id: r.user_id, user_name: r.user_name, created_at: r.created_at, updated_at: r.updated_at,
     needed_by: r.needed_by, edit_until: r.edit_until, changed_after_approval: !!r.changed_after_approval, items_count: r.items_count,
-    receipts: r.receipts,
+    receipts: r.receipts, delivery_total: r.delivery_total || 0,
   };
 }
 function listRequests(user, q) {
@@ -112,7 +112,8 @@ function listRequests(user, q) {
   const limit = Math.min(500, Number(q.limit) || 200);
   const rows = db.prepare(`SELECT r.*, u.name user_name,
       (SELECT COUNT(*) FROM request_items i WHERE i.request_id = r.id) items_count,
-      (SELECT COUNT(*) FROM files f WHERE f.request_id = r.id AND f.kind IN ('receipt','invoice')) receipts
+      (SELECT COUNT(*) FROM files f WHERE f.request_id = r.id AND f.kind IN ('receipt','invoice')) receipts,
+      (SELECT COALESCE(SUM(d.amount),0) FROM deliveries d WHERE d.request_id = r.id AND d.removed_at IS NULL) delivery_total
     FROM requests r JOIN users u ON u.id = r.user_id ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
     ORDER BY r.updated_at DESC LIMIT ${limit}`).all(...args);
   const counts = {};
@@ -146,6 +147,9 @@ function requestDetail(user, id) {
     files: files.map((f) => ({ ...f, sha256: undefined })),
     events: eventsOf('request', r.id),
     corrections: correctionsOf('request', r.id),
+    deliveries: L.deliveriesOf(r.id).map((d) => ({ ...d, paid_by_text: L.PAID_BY[d.paid_by], can_remove: user.role === 'head' || (d.user_id === user.id && now - d.created_at < Number(getSettings().edit_hours || 2) * 3600e3) })),
+    delivery_total: L.deliveryTotal(r.id),
+    can_add_delivery: L.canAddDelivery(user, r),
     mine: r.user_id === user.id,
     can_edit_plan: r.user_id === user.id && L.canEditPlan(r, now),
     can_edit_report: r.user_id === user.id && L.canEditReport(r, now),
@@ -183,6 +187,7 @@ function staffHome(user) {
   const mine = (statuses) => db.prepare(`SELECT r.*, u.name user_name FROM requests r JOIN users u ON u.id = r.user_id WHERE r.user_id = ? AND r.status IN (${statuses.map(() => '?').join(',')}) ORDER BY r.updated_at DESC`).all(user.id, ...statuses).map(requestRow);
   const month = new Date(); const mStart = new Date(month.getFullYear(), month.getMonth(), 1).getTime();
   const spent = db.prepare("SELECT COALESCE(SUM(actual_total),0) s, COUNT(*) n FROM requests WHERE user_id=? AND status='closed' AND closed_at >= ?").get(user.id, mStart);
+  spent.s += db.prepare('SELECT COALESCE(SUM(amount),0) s FROM delivery_costs WHERE req_user = ? AND ts >= ?').get(user.id, mStart).s;
   const inc = db.prepare("SELECT COALESCE(SUM(amount),0) s, COUNT(*) n FROM incomes WHERE user_id=? AND status='confirmed' AND date >= ?").get(user.id, new Date(mStart).toISOString().slice(0, 10));
   const adv = A.advances(user.id)[0];
   return {
@@ -220,7 +225,8 @@ function eventsFeed(q) {
 function listUsers() {
   return db.prepare(`SELECT u.id, u.login, u.name, u.position, u.phone, u.role, u.active, u.must_change_pw, u.created_at, u.last_login,
       (SELECT COUNT(*) FROM requests r WHERE r.user_id = u.id) requests,
-      (SELECT COALESCE(SUM(actual_total),0) FROM requests r WHERE r.user_id = u.id AND r.status='closed') spent
+      (SELECT COALESCE(SUM(actual_total),0) FROM requests r WHERE r.user_id = u.id AND r.status='closed')
+        + (SELECT COALESCE(SUM(amount),0) FROM delivery_costs d WHERE d.req_user = u.id) spent
     FROM users u ORDER BY u.active DESC, u.role, u.name`).all().map((u) => ({ ...u, spent: L.round2(u.spent) }));
 }
 function createUser(head, body) {
@@ -310,9 +316,9 @@ function exportCsv(q) {
       ...rows.map((r) => [L.reqNumber(r.id), d(r.closed_at), r.object, r.category, r.name, r.item, nf(r.qty), r.unit, nf(r.price), nf(r.actual_qty), nf(r.actual_price), r.shop, r.url])]);
   }
   const rows = listRequests({ role: 'head' }, { ...q, limit: 500 }).items;
-  return csv([['Номер', 'Создана', 'Тип', 'Что', 'Объект', 'Категория', 'Сотрудник', 'Статус', 'По заявке', 'Согласовано', 'Выдано', 'Факт по чекам'],
+  return csv([['Номер', 'Создана', 'Тип', 'Что', 'Объект', 'Категория', 'Сотрудник', 'Статус', 'По заявке', 'Согласовано', 'Выдано', 'Факт по чекам', 'Доставка'],
     ...rows.map((r) => [r.number, d(r.created_at), r.kind === 'money' ? 'Деньги под отчёт' : `Покупка ${r.channel === 'offline' ? 'офлайн' : 'онлайн'}`,
-      r.title, r.object, r.category, r.user_name, r.status_text, nf(r.amount), nf(r.approved_amount), nf(r.issued_amount), nf(r.actual_total)])]);
+      r.title, r.object, r.category, r.user_name, r.status_text, nf(r.amount), nf(r.approved_amount), nf(r.issued_amount), nf(r.actual_total), nf(r.delivery_total)])]);
 }
 
 // ---------- маршруты ----------
@@ -402,6 +408,13 @@ async function api(req, res, url) {
   if ((mt = p.match(/^\/api\/incomes\/(\d+)\/action$/)) && m === 'POST') {
     L.headIncomeAction(user, mt[1], String(body.action || ''), body);
     return ok({ income: incomeDetail(user, mt[1]) });
+  }
+
+  // доставка
+  if ((mt = p.match(/^\/api\/requests\/(\d+)\/deliveries$/)) && m === 'POST') { L.addDelivery(user, mt[1], body); return ok({ request: requestDetail(user, mt[1]) }); }
+  if ((mt = p.match(/^\/api\/deliveries\/(\d+)$/)) && m === 'DELETE') {
+    const rid = db.prepare('SELECT request_id FROM deliveries WHERE id = ?').get(Number(mt[1]))?.request_id;
+    L.removeDelivery(user, mt[1]); return ok({ request: requestDetail(user, rid) });
   }
 
   // корректировки

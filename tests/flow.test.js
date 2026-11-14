@@ -117,13 +117,37 @@ test('полный цикл заявки и защита', async () => {
   assert.ok(d2.flags.some((x) => x.code === 'dup_receipt'));
   await head('POST', `/api/requests/${id2}/action`, { action: 'close' });
 
-  // доход и аналитика
+  // доставка: после проведения, без согласования; чужой и до согласования — нельзя
+  const pend = (await eng('POST', '/api/requests', { kind: 'money', title: 'Ещё', purpose: 'x', amount: 100 })).data.id;
+  assert.equal((await eng('POST', `/api/requests/${pend}/deliveries`, { amount: 50 })).status, 409);
+  assert.equal((await other('POST', `/api/requests/${id}/deliveries`, { amount: 50 })).status, 404);
+  assert.equal((await eng('POST', `/api/requests/${id}/deliveries`, { amount: 0 })).status, 400);
+  const dl = await eng('POST', `/api/requests/${id}/deliveries`, { amount: 80, carrier: 'Нова пошта', ttn: '20450 000 000 000', paid_by: 'self', file: { name: 'np.png', data: PNG } });
+  assert.equal(dl.status, 200);
+  assert.equal(dl.data.request.delivery_total, 80);
+  assert.equal(dl.data.request.deliveries[0].ttn, '20450000000000');
+  assert.ok(dl.data.request.events.some((e) => e.action === 'delivery_added' && e.data.after_close));
+  // лишняя запись: автор удаляет сам, в журнале остаётся
+  const extra = await eng('POST', `/api/requests/${id}/deliveries`, { amount: 999, paid_by: 'company' });
+  const extraId = extra.data.request.deliveries.find((d) => d.amount === 999).id;
+  assert.equal((await other('DELETE', `/api/deliveries/${extraId}`)).status, 404);
+  assert.equal((await eng('DELETE', `/api/deliveries/${extraId}`)).status, 200);
+  // после окна правки сотрудник удалить не может, руководитель — может
+  db.prepare('UPDATE deliveries SET created_at = ? WHERE id = ?').run(Date.now() - 3 * 3600e3, dl.data.request.deliveries[0].id);
+  assert.equal((await eng('DELETE', `/api/deliveries/${dl.data.request.deliveries[0].id}`)).status, 423);
+  // «оплатил сам» → компания должна сотруднику
+  const adv = (await head('GET', '/api/head/overview')).data.advances.find((a) => a.name === 'Инженер');
+  assert.equal(adv.balance, -80);
+
+  // доход и аналитика (расходы = 315 + 450 по чекам + 80 доставка)
   const inc = await eng('POST', '/api/incomes', { date: new Date().toISOString().slice(0, 10), title: 'Навес', amount: 5000 });
   await head('POST', `/api/incomes/${inc.data.id}/action`, { action: 'confirm' });
   const ov = (await head('GET', '/api/head/overview')).data;
   assert.equal(ov.current.income, 5000);
-  assert.equal(ov.current.expenses, 765);
-  assert.equal(ov.current.profit, 4235);
+  assert.equal(ov.current.expenses, 845);
+  assert.equal(ov.current.delivery, 80);
+  assert.equal(ov.current.profit, 4155);
+  assert.ok(ov.by_category.some((c) => c.k === 'Доставка' && c.s === 80));
 
   // журнал нельзя изменить даже напрямую в базе
   assert.throws(() => db.prepare('DELETE FROM events').run(), /append-only/);

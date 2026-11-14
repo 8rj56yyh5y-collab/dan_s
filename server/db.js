@@ -124,6 +124,28 @@ CREATE INDEX IF NOT EXISTS files_req ON files(request_id);
 CREATE INDEX IF NOT EXISTS files_inc ON files(income_id);
 CREATE INDEX IF NOT EXISTS files_sha ON files(sha256);
 
+-- Доставка: добавляется к заявке после покупки (в т. ч. после проведения), без согласования.
+-- Расход считается датой добавления, но не раньше проведения заявки.
+CREATE TABLE IF NOT EXISTS deliveries (
+  id INTEGER PRIMARY KEY,
+  request_id INTEGER NOT NULL REFERENCES requests(id),
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  amount REAL NOT NULL,
+  carrier TEXT NOT NULL DEFAULT '',
+  ttn TEXT NOT NULL DEFAULT '',
+  paid_by TEXT NOT NULL DEFAULT 'self' CHECK (paid_by IN ('advance','self','company')),
+  comment TEXT NOT NULL DEFAULT '',
+  file_id INTEGER REFERENCES files(id),
+  created_at INTEGER NOT NULL,
+  removed_at INTEGER, removed_by INTEGER
+);
+CREATE INDEX IF NOT EXISTS deliveries_req ON deliveries(request_id);
+CREATE VIEW IF NOT EXISTS delivery_costs AS
+  SELECT d.id, d.request_id, d.amount, d.paid_by, d.user_id, r.user_id req_user, r.object, r.category,
+         MAX(d.created_at, r.closed_at) ts
+  FROM deliveries d JOIN requests r ON r.id = d.request_id
+  WHERE d.removed_at IS NULL AND r.status = 'closed';
+
 -- Запросы на корректировку после окончания окна правки.
 CREATE TABLE IF NOT EXISTS corrections (
   id INTEGER PRIMARY KEY,
