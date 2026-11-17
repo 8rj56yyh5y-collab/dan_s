@@ -105,7 +105,7 @@
 
   // ================= Каркас =================
   const NAV_HEAD = [
-    ['/', 'home', 'Обзор'], ['/requests', 'list', 'Заявки', 'todo'], ['/incomes', 'coins', 'Доходы', 'inc'], ['/cash', 'wallet', 'Касса'],
+    ['/', 'home', 'Обзор'], ['/requests', 'list', 'Заявки', 'todo'], ['/incomes', 'coins', 'Доходы', 'inc'], ['/cash', 'wallet', 'Касса', 'cash'],
     ['/analytics', 'chart', 'Аналитика'], ['/control', 'shield', 'Контроль', 'flags'], ['/journal', 'history', 'Журнал'],
     ['sep'], ['/team', 'users', 'Команда'], ['/settings', 'sliders', 'Настройки'],
   ];
@@ -150,7 +150,7 @@
   async function loadBadges() {
     try {
       const h = await api('/api/home');
-      if (isHead()) S.badges = { todo: h.to_approve.length + h.to_close.length || 0, inc: h.incomes.length || 0, flags: h.corrections.length || 0 };
+      if (isHead()) S.badges = { todo: h.to_approve.length + h.to_close.length || 0, inc: h.incomes.length || 0, flags: h.corrections.length || 0, cash: h.openings.length || 0 };
       else S.badges = { todo: h.todo.length || 0 };
       return h;
     } catch { return null; }
@@ -352,7 +352,7 @@
   async function pageStaffHome() {
     const h = await api('/api/home');
     const adv = h.advance.balance;
-    return `${head(`Здравствуйте, ${esc(S.me.name.split(' ')[0])}`, 'Ваши заявки, отчёты и деньги под отчёт', `<a class="btn" href="#/new">${ic('plus')} Новая заявка</a><a class="btn soft" href="#/new-income">${ic('coins')} Внести доход</a>`)}
+    return `${head(`Здравствуйте, ${esc(S.me.name.split(' ')[0])}`, 'Ваши заявки, отчёты и деньги под отчёт', `<a class="btn" href="#/new">${ic('plus')} Новая заявка</a><a class="btn soft" href="#/new-income">${ic('coins')} Внести доход</a><button class="btn soft" data-opening>${ic('wallet')} Начальный остаток</button>`)}
       <div class="grid-kpi">
         ${kpi('Нужно сделать', h.todo.length, h.todo.length ? 'отчёт, покупка или доработка' : 'всё сделано', h.todo.length ? 'hl' : '')}
         ${kpi('Ждут руководителя', h.waiting.length, 'на согласовании и проверке')}
@@ -363,10 +363,11 @@
         ${listCard('<h3>Нужно сделать</h3>', h.todo.map((r) => reqLi(r)), 'Задач нет. Новая покупка — кнопка «Новая заявка».')}
         ${listCard('<h3>Ждут решения</h3>', h.waiting.map((r) => reqLi(r)), 'Нет заявок на согласовании', '<a class="link small" href="#/requests">Все заявки</a>')}
       </div>
+      ${h.openings.length ? `<div class="card" style="margin-top:16px"><h3>Начальный остаток</h3><div class="list">${h.openings.map((o) => openingLi(o)).join('')}</div></div>` : ''}
       ${h.corrections.length ? `<div class="card" style="margin-top:16px"><h3>Запросы на корректировку</h3><div class="list">${h.corrections.map((c) => `<div class="li"><div class="t1">${esc(c.number)} — ${esc(c.reason)}</div><div>${pill(c.status === 'pending' ? 'pending' : c.status === 'approved' ? 'approved' : 'rejected', { pending: 'Ждёт решения', approved: 'Разрешено', rejected: 'Отказано' }[c.status])}</div></div>`).join('')}</div></div>` : ''}
       <div class="note info" style="margin-top:16px">${ic('info')}<span>Как это работает: <b>заявка</b> (что, сколько, цена, ссылка) → <b>согласование</b> руководителем → покупка → <b>отчёт с чеком</b> → руководитель <b>проводит</b>. На исправление ошибок есть ${nf(S.settings.edit_hours)} ч, дальше — через запрос на корректировку.</span></div>`;
   }
-  pageStaffHome.after = startTimers;
+  pageStaffHome.after = () => { startTimers(); bindOpenings(); };
 
   // ================= Обзор руководителя =================
   let headHomeData = null;
@@ -374,6 +375,7 @@
     const h = await api('/api/home'); headHomeData = h;
     const o = h.overview; const c = o.current; const p = o.previous;
     const adv = o.advances.filter((a) => a.balance > 0);
+    const opn = h.openings.map((o) => openingLi(o, true));
     const corr = h.corrections.map((x) => `<div class="li"><div class="t1">${esc(x.number)} · ${esc(x.user_name)}</div><div class="row"><button class="btn sm" data-corr="${x.id}" data-ok="1">Разрешить</button><button class="btn sm soft" data-corr="${x.id}" data-ok="0">Отказать</button></div>
       <div class="t2" style="grid-column:1/-1"><a class="link" href="#/${x.entity === 'request' ? 'r' : 'income'}/${x.entity_id}">Открыть</a> · ${esc(x.reason)}</div></div>`);
     const inc = h.incomes.map((i) => `<a class="li" href="#/income/${i.id}"><div class="t1">${esc(i.title)}</div><div class="amt up">+${money(i.amount)}</div><div class="t2"><span>${esc(i.number)}</span><span>${esc(i.date)}</span><span>· ${esc(i.user_name)}</span></div></a>`);
@@ -382,11 +384,12 @@
         ${kpi('Доходы', money(c.income), delta(c.income, p.income), '', 'var(--c-in)')}
         ${kpi('Расходы', money(c.expenses), delta(c.expenses, p.expenses, true), '', 'var(--c-out)')}
         ${kpi('Прибыль', money(c.profit), c.income ? `рентабельность ${nf((c.profit / c.income) * 100, 1)}%` : 'доходов пока нет', 'ink')}
-        ${kpi('Ждут вашего решения', h.to_approve.length + h.to_close.length + h.incomes.length + h.corrections.length, `${h.to_approve.length} заявок · ${h.to_close.length} отчётов · ${h.incomes.length} доходов`, h.to_approve.length + h.to_close.length ? 'hl' : '')}
+        ${kpi('Ждут вашего решения', h.to_approve.length + h.to_close.length + h.incomes.length + h.corrections.length + h.openings.length, `${h.to_approve.length} заявок · ${h.to_close.length} отчётов · ${h.incomes.length} доходов`, h.to_approve.length + h.to_close.length ? 'hl' : '')}
       </div>
       <div class="grid-2">
         ${listCard(`<h3>На согласование <span class="faint">${h.to_approve.length}</span></h3>`, h.to_approve.map((r) => reqLi(r)), 'Новых заявок нет', '<a class="link small" href="#/requests?status=pending">Все</a>')}
         ${listCard(`<h3>Отчёты на проверку <span class="faint">${h.to_close.length}</span></h3>`, h.to_close.map((r) => reqLi(r)), 'Отчётов на проверке нет', '<a class="link small" href="#/requests?status=review">Все</a>')}
+        ${opn.length ? listCard(`<h3>Начальный остаток на подтверждение <span class="faint">${opn.length}</span></h3>`, opn, '') : ''}
         ${corr.length ? listCard(`<h3>Запросы на корректировку <span class="faint">${corr.length}</span></h3>`, corr, '') : ''}
         ${listCard(`<h3>Доходы на подтверждение <span class="faint">${inc.length}</span></h3>`, inc, 'Новых доходов нет', '<a class="link small" href="#/incomes?status=new">Все</a>')}
       </div>
@@ -405,6 +408,7 @@
   pageHeadHome.after = () => {
     bindMonthly(headHomeData.overview.monthly);
     $$('[data-corr]').forEach((b) => b.onclick = () => decideCorrection(b.dataset.corr, b.dataset.ok === '1'));
+    bindOpenings();
   };
   async function decideCorrection(id, approve) {
     const r = await ask({ title: approve ? 'Разрешить корректировку' : 'Отказать в корректировке', text: approve ? `Сотрудник сможет исправить запись в течение ${nf(S.settings.edit_hours)} ч. Все изменения попадут в журнал.` : '',
@@ -616,7 +620,8 @@
         <div class="stack">
           ${comment}
           ${x.purpose ? `<div class="card"><div class="muted small" style="margin-bottom:4px">Назначение</div>${esc(x.purpose).replace(/\n/g, '<br>')}</div>` : ''}
-          <div class="card"><div class="card-h"><h3>${reportMode ? 'Отчёт: цены и количество по чеку' : 'Позиции'}</h3>${reportMode ? '<span class="faint small">сохраняется автоматически при отправке</span>' : ''}</div>${items}
+          <div class="card"><div class="card-h"><h3>${reportMode ? 'Отчёт: цены и количество по чеку' : 'Позиции'}</h3>${reportMode ? '<span class="faint small">сохраняется автоматически при отправке</span>' : ''}</div>
+            ${reportMode && x.status !== 'review' && x.files.some((f) => f.kind === 'receipt') ? `<div class="note warn" style="margin-bottom:14px">${ic('info')}<span>Чек прикреплён. Теперь впишите цены из чека ${x.kind === 'money' ? 'по каждой покупке' : 'в колонку «Цена по чеку»'} и нажмите <b>«Отправить отчёт»</b> — без этого руководитель не видит, сколько потрачено.${S.meta.ai ? ' Или нажмите «Распознать ИИ» под чеком.' : ''}</span></div>` : ''}${items}
             ${reportMode && x.kind === 'money' ? `<div class="form-grid" style="margin-top:14px"><label class="field"><span>Возвращаю остаток, ${cur()}</span><input class="input" id="ret" inputmode="decimal" value="${esc(x.returned_amount ?? '')}" placeholder="0"></label></div>` : ''}
             ${reportMode ? `<div class="row" style="justify-content:flex-end;margin-top:14px"><button class="btn soft" id="save-report">Сохранить черновик</button><button class="btn" id="send-report">${ic('send', 18)} ${x.status === 'review' ? 'Сохранить исправления' : 'Отправить отчёт'}</button></div>` : ''}
           </div>
@@ -680,7 +685,9 @@
     report_submitted: ['Отчёт отправлен', 'send', 'hl'], report_edited: ['Отчёт исправлен после отправки', 'edit', 'warn'], report_returned: ['Отчёт возвращён на доработку', 'refresh', 'warn'],
     closed: ['Проведено', 'check', 'hl'], cancelled: ['Отменено', 'xCircle', 'bad'], comment: ['Комментарий', 'chat', ''], file_added: ['Добавлен файл', 'upload', ''],
     file_removed: ['Файл убран', 'trash', 'warn'], correction_requested: ['Запрос на корректировку', 'unlock', 'warn'], correction_approved: ['Корректировка разрешена', 'unlock', 'hl'],
-    correction_rejected: ['В корректировке отказано', 'lock', 'bad'], ai_receipt: ['Чек распознан ИИ', 'sparkles', ''], delivery_added: ['Добавлена доставка', 'truck', 'hl'], cash_topup: ['Касса: пополнение', 'wallet', 'hl'], cash_expense: ['Касса: расход', 'wallet', 'warn'],
+    correction_rejected: ['В корректировке отказано', 'lock', 'bad'], ai_receipt: ['Чек распознан ИИ', 'sparkles', ''], delivery_added: ['Добавлена доставка', 'truck', 'hl'], opening_requested: ['Начальный остаток: заявка', 'wallet', 'warn'], opening_approved: ['Начальный остаток подтверждён', 'wallet', 'hl'],
+    opening_rejected: ['Начальный остаток отклонён', 'wallet', 'bad'], opening_issued: ['Начальный остаток на руках', 'wallet', 'hl'], report_by_head: ['Руководитель внёс цены по чеку', 'receipt', 'warn'],
+    telegram_linked: ['Подключён Telegram', 'send', 'hl'], telegram_unlinked: ['Отключён Telegram', 'send', ''], cash_topup: ['Касса: пополнение', 'wallet', 'hl'], cash_expense: ['Касса: расход', 'wallet', 'warn'],
     cash_withdraw: ['Касса: сдано', 'wallet', ''], cash_recount: ['Касса: пересчёт', 'scale', 'warn'], cash_recount_ok: ['Касса: пересчёт сошёлся', 'scale', 'hl'], cash_voided: ['Касса: операция отменена', 'wallet', 'bad'], delivery_removed: ['Доставка удалена', 'truck', 'warn'], confirmed: ['Подтверждено', 'checkCircle', 'hl'],
     login: ['Вход в систему', 'user', ''], login_failed: ['Неудачный вход', 'alert', 'bad'], logout: ['Выход', 'logout', ''], password_changed: ['Сменён пароль', 'lock', ''],
     password_reset: ['Пароль сброшен руководителем', 'lock', 'warn'], user_created: ['Добавлен сотрудник', 'users', 'hl'], user_updated: ['Изменён сотрудник', 'users', 'warn'],
@@ -733,8 +740,19 @@
     const now = x.now || Date.now();
     if (isHead() && !x.mine) {
       if (x.status === 'pending') b.push(`<button class="btn block lg" data-h="approve">${ic('check')} Согласовать</button><div class="row"><button class="btn soft" style="flex:1" data-h="return">${ic('refresh', 16)} На доработку</button><button class="btn danger" style="flex:1" data-h="reject">Отклонить</button></div>`);
-      if (x.status === 'approved') b.push(`<button class="btn block lg" data-h="issue">${ic('wallet')} Выдать деньги</button><p class="faint small" style="margin:0">${x.kind === 'money' ? 'Отметьте, когда передадите деньги сотруднику.' : 'Если сотрудник покупает за наличные — отметьте выдачу. Если оплачиваете сами по ссылке — ждите отчёт с чеком.'}</p>`);
-      if (x.status === 'issued') b.push(`<div class="note">${ic('clock')}<span>Деньги у сотрудника. Ждём отчёт с чеками.</span></div>`);
+      const hasReceipt = x.files.some((f) => ['receipt', 'invoice'].includes(f.kind));
+      if (['approved', 'issued', 'report_revision'].includes(x.status)) {
+        if (hasReceipt) {
+          b.push(`<div class="note warn">${ic('receipt')}<span>Сотрудник приложил чек, но ещё не отправил отчёт с ценами. Можно подождать отчёт или внести суммы из чека самому и провести.</span></div>
+            <button class="btn block lg" data-h="accept">${ic('check')} Провести по чеку</button>`);
+        } else if (x.status === 'approved') {
+          b.push(`<div class="note ok">${ic('checkCircle')}<span>Согласовано. Ждём от сотрудника покупку и отчёт: цены по чеку и фото чека.</span></div>`);
+        } else if (x.status === 'issued') {
+          b.push(`<div class="note">${ic('clock')}<span>Деньги у сотрудника. Ждём отчёт с чеками.</span></div>`);
+        }
+      }
+      if (x.status === 'approved') b.push(`<button class="btn ${x.kind === 'money' && !hasReceipt ? 'block lg' : 'soft block'}" data-h="issue">${ic('wallet', 18)} Выдать деньги</button>
+        <p class="faint xs" style="margin:0">${x.kind === 'money' ? 'Отметьте, когда передадите деньги сотруднику. Если в кассе не хватает — выдать не получится.' : 'Нужно, только если даёте сотруднику наличные на покупку. Это не подтверждение — подтверждение уже есть.'}</p>`);
       if (x.status === 'review') b.push(`<button class="btn block lg" data-h="close">${ic('check')} Провести</button><button class="btn soft block" data-h="return">${ic('refresh', 16)} Вернуть отчёт</button>`);
       if (['revision', 'report_revision'].includes(x.status)) b.push(`<div class="note info">${ic('refresh')}<span>У сотрудника на доработке.</span></div>`);
       b.push(`<button class="btn outline block sm" data-h="comment">${ic('chat', 16)} Комментарий</button>`);
@@ -949,7 +967,56 @@
     $$('[data-ap]')[0]?.dispatchEvent(new Event('input'));
     toast(hit ? `Подставлено ${hit} из ${x.items.length}. Остальное — вручную` : 'Не удалось сопоставить позиции — заполните вручную', !hit);
   }
+  // Руководитель вносит цены из чека сам и проводит заявку.
+  function acceptDialog(x) {
+    const receipt = x.files.find((f) => ['receipt', 'invoice'].includes(f.kind));
+    const preview = receipt ? (receipt.mime.startsWith('image/') && receipt.mime !== 'image/heic'
+      ? `<img src="/api/files/${receipt.id}" alt="Чек" style="max-height:280px;max-width:100%;border-radius:10px;border:1px solid var(--line);display:block;margin:0 auto">`
+      : `<a class="link" href="/api/files/${receipt.id}" target="_blank" rel="noopener">${ic('doc', 14)} Открыть чек</a>`) : '';
+    const body = x.kind === 'money'
+      ? `<div class="items-edit" id="acc-items">${(x.items.length ? x.items : [{}]).map((i) => moneyRow(i)).join('')}</div>
+         <button type="button" class="btn soft sm" id="acc-add">${ic('plus', 16)} Позиция</button>
+         ${x.issued_amount != null ? `<label class="field"><span>Возвращено в кассу, ${cur()}</span><input class="input" name="returned" inputmode="decimal" value="${esc(x.returned_amount ?? '')}" placeholder="0"></label>` : ''}`
+      : `<table class="t"><thead><tr><th>Позиция</th><th class="r">Кол-во</th><th class="r">Цена по чеку</th></tr></thead><tbody>${x.items.map((i) => `<tr><td>${esc(i.name)}<div class="faint xs">в заявке ${money(i.price)}</div></td>
+          <td class="r"><input class="input" style="height:36px;width:80px;text-align:right" data-aq="${i.id}" inputmode="decimal" value="${esc(i.actual_qty ?? i.qty)}"></td>
+          <td class="r"><input class="input" style="height:36px;width:110px;text-align:right" data-ap="${i.id}" inputmode="decimal" value="${esc(i.actual_price ?? '')}" placeholder="${esc(i.price)}"></td></tr>`).join('')}</tbody></table>`;
+    modal(`<h2>Провести по чеку</h2><p class="muted" style="margin:0">Перепишите суммы из чека. Заявка будет проведена, расход попадёт в аналитику.</p>
+      ${preview}<form class="stack" id="acc" novalidate>${body}
+      <div class="row between"><span class="muted">Итого по чеку</span><b class="num" id="acc-total">—</b></div>
+      <div class="acts"><button type="button" class="btn soft" data-close>Отмена</button><button class="btn">${ic('check', 16)} Провести</button></div></form>`, {
+      wide: true,
+      onOpen: (box, close) => {
+        const f = $('#acc', box);
+        const recalc = () => {
+          let t = 0;
+          if (x.kind === 'money') $$('#acc-items .item-row', box).forEach((row) => { t += (Number(row.querySelector('[name=qty]').value.replace(',', '.')) || 0) * (Number(row.querySelector('[name=price]').value.replace(',', '.')) || 0); });
+          else x.items.forEach((i) => { t += (Number($(`[data-aq="${i.id}"]`, box).value.replace(',', '.')) || 0) * (Number($(`[data-ap="${i.id}"]`, box).value.replace(',', '.')) || 0); });
+          $('#acc-total', box).textContent = money(t);
+        };
+        f.addEventListener('input', recalc); recalc();
+        if ($('#acc-add', box)) {
+          $('#acc-add', box).onclick = () => { $('#acc-items', box).insertAdjacentHTML('beforeend', moneyRow({})); };
+          $('#acc-items', box).onclick = (e) => { const d = e.target.closest('[data-del]'); if (d) { d.closest('.item-row').remove(); recalc(); } };
+        }
+        f.onsubmit = async (e) => {
+          e.preventDefault();
+          let payload;
+          if (x.kind === 'money') {
+            const items = $$('#acc-items .item-row', box).map((row) => {
+              const v = (n) => row.querySelector(`[name=${n}]`).value.trim();
+              return { name: v('name'), qty: v('qty').replace(',', '.'), unit: v('unit'), price: v('price').replace(/\s/g, '').replace(',', '.'), actual_price: v('price').replace(/\s/g, '').replace(',', '.'), actual_qty: v('qty').replace(',', '.'), shop: v('shop') };
+            }).filter((i) => i.name);
+            payload = { items, returned_amount: f.returned ? f.returned.value.replace(',', '.') : undefined };
+          } else {
+            payload = { items: x.items.map((i) => ({ id: i.id, actual_qty: $(`[data-aq="${i.id}"]`, box).value.replace(',', '.'), actual_price: $(`[data-ap="${i.id}"]`, box).value.replace(/\s/g, '').replace(',', '.') })) };
+          }
+          try { await post(`/api/requests/${x.id}/action`, { action: 'accept', ...payload }); close(); toast('Проведено'); render(); } catch (err) { fail(err); }
+        };
+      },
+    });
+  }
   async function headDo(x, action) {
+    if (action === 'accept') return acceptDialog(x);
     let body = { action };
     if (action === 'approve') {
       const r = await ask({ title: `Согласовать ${x.number}`, text: `Сумма по заявке: <b>${money(x.amount)}</b>`, fields: [{ name: 'approved_amount', label: `Согласованная сумма, ${cur()}`, type: 'money', value: x.amount, hint: 'Можно согласовать меньшую сумму' }, { name: 'comment', label: 'Комментарий (необязательно)', type: 'textarea' }], ok: 'Согласовать' });
@@ -1176,7 +1243,7 @@
   async function pageTeam() {
     team = (await api('/api/head/users')).items;
     const rows = team.map((u) => `<tr class="${u.active ? '' : 'faint'}"><td><div class="row" style="gap:10px;flex-wrap:nowrap"><span class="avatar" style="background:var(--surface-2)">${esc(initials(u.name))}</span><span><b>${esc(u.name)}</b><div class="faint xs">${esc(u.login)} · ${esc(u.position || '—')}</div></span></div></td>
-      <td>${u.role === 'head' ? '<span class="tag">Руководитель</span>' : '<span class="tag">Сотрудник</span>'} ${u.active ? '' : '<span class="tag" style="color:var(--danger)">отключён</span>'} ${u.must_change_pw ? '<span class="tag">временный пароль</span>' : ''}</td>
+      <td>${u.role === 'head' ? '<span class="tag">Руководитель</span>' : '<span class="tag">Сотрудник</span>'} ${u.active ? '' : '<span class="tag" style="color:var(--danger)">отключён</span>'} ${u.must_change_pw ? '<span class="tag">временный пароль</span>' : ''} ${u.telegram ? `<span class="tag">${ic('send', 12)} Telegram</span>` : ''}</td>
       <td class="r num hide-m">${u.requests}</td><td class="r num hide-m">${money(u.spent)}</td><td class="hide-m faint small">${u.last_login ? dt(u.last_login) : 'не входил'}</td>
       <td class="r"><div class="row" style="justify-content:flex-end;flex-wrap:nowrap"><a class="btn soft sm" href="#/requests?user=${u.id}&status=">Заявки</a><button class="btn soft sm" data-ue="${u.id}">${ic('edit', 15)}</button></div></td></tr>`).join('');
     return `${head('Команда', 'Учётные записи подразделения. Сотрудник видит только свои заявки и доходы, руководитель — всё.', `<button class="btn" id="add-user">${ic('plus')} Добавить сотрудника</button>`)}
@@ -1257,11 +1324,40 @@
     };
   };
 
+  // ================= Начальный остаток =================
+  const OP_TARGET = { cash: 'Наличные в кассе БХ', advance: 'Деньги на руках (под отчёт)' };
+  function openingLi(o, decide = false) {
+    const st = { pending: ['pending', 'Ждёт подтверждения'], approved: ['approved', 'Подтверждено'], rejected: ['rejected', 'Отклонено'] }[o.status];
+    return `<div class="li"><div class="t1">${esc(OP_TARGET[o.target])}${decide ? ` · ${esc(o.user_name)}` : ''}</div><div class="amt">${money(o.amount)}</div>
+      <div class="t2" style="grid-column:1/-1">${pill(st[0], st[1])}<span>${esc(o.comment)}</span><span class="faint">${dt(o.created_at)}</span>${o.decision_comment ? `<span>· ${esc(o.decision_comment)}</span>` : ''}
+        ${o.request_id ? `<a class="link" href="#/r/${o.request_id}">отчитаться чеками</a>` : ''}</div>
+      ${decide && o.status === 'pending' ? `<div class="row" style="grid-column:1/-1;margin-top:6px"><button class="btn sm" data-op="${o.id}" data-ok="1">${ic('check', 15)} Подтвердить</button><button class="btn sm soft" data-op="${o.id}" data-ok="0">Отклонить</button></div>` : ''}</div>`;
+  }
+  async function openingDialog() {
+    const r = await ask({ title: 'Начальный остаток', text: 'Если на старте работы с системой у вас уже есть деньги — внесите их здесь. Руководитель подтвердит сумму, и с неё начнётся учёт.',
+      fields: [{ name: 'target', label: 'Что это за деньги', type: 'select', value: isHead() ? 'cash' : 'advance', options: Object.entries(OP_TARGET) },
+        { name: 'amount', label: `Сумма, ${cur()}`, type: 'money', required: true },
+        { name: 'comment', label: 'Откуда эти деньги', type: 'text', required: true, placeholder: 'Например: остаток с прошлого месяца, выдавали на материалы' }], ok: 'Отправить на подтверждение' });
+    if (!r) return;
+    try { await post('/api/openings', r); toast('Отправлено руководителю на подтверждение'); render(); } catch (e) { fail(e); }
+  }
+  function bindOpenings() {
+    $$('[data-opening]').forEach((b) => b.onclick = openingDialog);
+    $$('[data-op]').forEach((b) => b.onclick = async () => {
+      const ok = b.dataset.ok === '1';
+      const r = await ask({ title: ok ? 'Подтвердить начальный остаток?' : 'Отклонить начальный остаток', text: ok ? 'Наличные в кассе попадут в остаток кассы. Деньги на руках станут подотчётом сотрудника — он отчитается по ним чеками.' : '',
+        fields: [{ name: 'comment', label: ok ? 'Комментарий (необязательно)' : 'Причина', type: 'text', required: !ok }], ok: ok ? 'Подтвердить' : 'Отклонить', danger: !ok });
+      if (!r) return;
+      try { await post(`/api/openings/${b.dataset.op}/decide`, { approve: ok, comment: r.comment }); toast(ok ? 'Подтверждено' : 'Отклонено'); render(); } catch (e) { fail(e); }
+    });
+  }
+
   // ================= Касса =================
   let cashData = null;
   const CASH_KIND_IC = { topup: 'plus', income: 'coins', return: 'refresh', issue: 'wallet', expense: 'receipt', withdraw: 'upload', recount: 'scale' };
   async function pageCash(r) {
     const q = r.q; cashData = await api(`/api/head/cash?${new URLSearchParams(q)}`);
+    cashData.openings = (await api('/api/openings')).items;
     const c = cashData;
     const presets = periodPresets();
     const link = (extra) => `#/cash?${new URLSearchParams({ ...q, ...extra })}`;
@@ -1285,6 +1381,8 @@
       `<a class="btn soft sm" href="/api/head/export?${new URLSearchParams({ type: 'cash', from: c.range.from, to: c.range.to })}" download>${ic('download', 16)} CSV</a>
        <button class="btn soft" data-cash="recount">${ic('scale', 16)} Пересчёт</button><button class="btn soft" data-cash="withdraw">${ic('upload', 16)} Сдать</button>
        <button class="btn soft" data-cash="expense">${ic('receipt', 16)} Расход</button><button class="btn" data-cash="topup">${ic('plus', 16)} Пополнить</button>`)}
+      ${c.openings.length ? `<div class="card flush" style="margin-bottom:16px"><div class="card-h" style="padding:16px 20px 0"><h3>Начальный остаток</h3><button class="btn soft sm" data-opening>${ic('plus', 15)} Внести</button></div><div class="list">${c.openings.map((o) => openingLi(o, true)).join('')}</div></div>`
+        : `<div class="note" style="margin-bottom:16px">${ic('info')}<span>Начинаете вести кассу? Внесите <button class="link-btn" data-opening>начальный остаток</button> — его подтверждает руководитель, и с него начнётся учёт.</span></div>`}
       <div class="grid-kpi">
         ${kpi('В кассе сейчас', money(c.balance), 'наличные на руках у руководителя', 'ink')}
         ${kpi('Пришло за период', `+${money(c.totals.in)}`, `на начало ${money(c.opening)}`, '', 'var(--c-in)')}
@@ -1300,6 +1398,7 @@
       <div class="note" style="margin-top:16px">${ic('info')}<span>Выдача денег под отчёт, возврат остатка при проведении отчёта и подтверждённые доходы наличными попадают в кассу автоматически. Расход из кассы сразу учитывается в аналитике. Ничего не удаляется: ошибочную операцию можно отменить с причиной — она останется в списке зачёркнутой.</span></div>`;
   }
   pageCash.after = () => {
+    bindOpenings();
     $$('[data-cash]').forEach((b) => b.onclick = () => cashDialog(b.dataset.cash));
     $$('[data-void]').forEach((b) => b.onclick = async () => {
       const res = await ask({ title: 'Отменить операцию?', text: 'Операция останется в списке зачёркнутой, остаток пересчитается.', fields: [{ name: 'reason', label: 'Причина', type: 'text', required: true }], ok: 'Отменить операцию', danger: true });
@@ -1343,10 +1442,36 @@
           <div class="theme-switch" style="max-width:320px">${themeButtons(theme)}</div>
           <p class="muted small" style="margin:0">На iPhone: «Поделиться» → «На экран Домой» — БХ Учёт откроется как приложение.</p>
           <button class="btn danger" id="logout">${ic('logout')} Выйти</button></div>
+        <div class="card stack" id="tg-card"><h3 style="margin:0">${ic('send', 18)} Уведомления в Telegram</h3><div class="muted small">Загрузка…</div></div>
       </div>`;
+  }
+  async function renderTelegram() {
+    const box = $('#tg-card'); if (!box) return;
+    let t; try { t = await api('/api/me/telegram'); } catch (e) { return; }
+    const title = `<h3 style="margin:0">${ic('send', 18)} Уведомления в Telegram</h3>`;
+    if (!t.enabled) { box.innerHTML = `${title}<p class="muted small" style="margin:0">Бот ещё не подключён к системе. ${isHead() ? 'Как подключить — в README, раздел «Telegram-бот» (нужен токен от @BotFather в настройках Render).' : 'Сообщите руководителю.'}</p>`; return; }
+    if (t.linked) {
+      box.innerHTML = `${title}<div class="note ok">${ic('checkCircle')}<span>Подключено${t.username ? ` — @${esc(t.username)}` : ''}. ${isHead() ? 'Новые заявки, отчёты, доходы и корректировки приходят с кнопками для решения.' : 'Сюда приходят решения по вашим заявкам.'}</span></div>
+        <button class="btn soft" id="tg-off">Отключить</button>`;
+      $('#tg-off').onclick = async () => { try { await api('/api/me/telegram', { method: 'DELETE' }); toast('Telegram отключён'); renderTelegram(); } catch (e) { fail(e); } };
+      return;
+    }
+    box.innerHTML = `${title}<p class="muted small" style="margin:0">${isHead() ? 'Получайте новые заявки и отчёты в Telegram и согласовывайте их одной кнопкой.' : 'Получайте в Telegram, что ваша заявка согласована, проведена или возвращена.'}</p>
+      <button class="btn" id="tg-on">${ic('send', 16)} Подключить Telegram</button><p class="faint xs" style="margin:0" id="tg-hint">Откроется бот @${esc(t.bot)} — нажмите в нём «Start».</p>`;
+    $('#tg-on').onclick = async () => {
+      try {
+        const r = await post('/api/me/telegram');
+        window.open(r.url, '_blank', 'noopener');
+        $('#tg-hint').innerHTML = `Если Telegram не открылся — <a class="link" href="${esc(r.url)}" target="_blank" rel="noopener">нажмите здесь</a>. После «Start» вернитесь и <button class="link-btn" id="tg-check">проверьте</button>.`;
+        $('#tg-check').onclick = renderTelegram;
+        let n = 0; const timer = setInterval(async () => { n++; const st = await api('/api/me/telegram').catch(() => null); if (st?.linked || n > 40) { clearInterval(timer); if (st?.linked) { toast('Telegram подключён'); renderTelegram(); } } }, 3000);
+        S.timers.push(timer);
+      } catch (e) { fail(e); }
+    };
   }
   pageProfile.after = () => {
     $('#logout').onclick = logout;
+    renderTelegram();
     $('#pw').onsubmit = async (e) => {
       e.preventDefault(); const f = e.target;
       try { await post('/api/me/password', { current: f.current.value, next: f.next.value }); toast('Пароль изменён'); f.reset(); } catch (err) { fail(err); }

@@ -246,6 +246,15 @@ function updateRequest(user, id, body) {
     if (!canEditReport(r, now)) throw new HttpError(423, r.status === 'review'
       ? 'Время на правку отчёта вышло. Отправьте запрос на корректировку руководителю.'
       : 'Сейчас отчёт по этой заявке изменить нельзя');
+    return writeReport(user, r, body, before, r.status === 'review' ? 'report_edited' : 'report_draft');
+  });
+}
+
+// Записывает фактические цены/количество (отчёт). Права проверяет вызывающая функция.
+// «Потрачено по чекам» считается, только когда цены по чеку указаны у всех позиций.
+function writeReport(user, r, body, before, action) {
+  const now = Date.now();
+  {
     let items;
     if (r.kind === 'money') {
       // По подотчёту сотрудник сам перечисляет, что купил; цена по чеку = фактическая.
@@ -275,11 +284,13 @@ function updateRequest(user, id, body) {
     ];
     if (!changes.length) return { changed: false };
     writeItems(r.id, items);
-    const total = actualTotal(itemsOf(r.id));
+    const saved = itemsOf(r.id);
+    const complete = saved.length > 0 && saved.every((i) => i.actual_price != null);
+    const total = complete ? actualTotal(saved) : null;
     db.prepare('UPDATE requests SET actual_total = ?, returned_amount = ?, updated_at = ? WHERE id = ?').run(total, returned, now, r.id);
-    logEvent(user.id, 'request', r.id, r.status === 'review' ? 'report_edited' : 'report_draft', { changes, actual_total: total });
+    logEvent(user.id, 'request', r.id, action, { changes, actual_total: total });
     return { changed: true };
-  });
+  }
 }
 
 function staffAction(user, id, action, body = {}) {
@@ -360,6 +371,22 @@ function headAction(user, id, action, body = {}) {
         }
         db.prepare("UPDATE requests SET status='issued', issued_amount=?, issued_from_cash=?, updated_at=? WHERE id=?").run(amt, fromCash ? 1 : 0, now, r.id);
         logEvent(user.id, 'request', r.id, 'issued', { issued_amount: amt, comment, from_cash: fromCash });
+        break;
+      }
+      case 'accept': {
+        // Сотрудник приложил чек, но отчёт не отправил: руководитель сам вносит цены из чека и проводит.
+        if (!['approved', 'issued', 'report_revision', 'review'].includes(r.status)) throw new HttpError(409, 'Провести по чеку сейчас нельзя');
+        const receipts = db.prepare("SELECT COUNT(*) n FROM files WHERE request_id = ? AND kind IN ('receipt','invoice')").get(r.id).n;
+        if (!receipts) throw new HttpError(400, 'Нет чека — провести нельзя. Попросите сотрудника приложить чек.');
+        writeReport(user, r, body, itemsOf(r.id), 'report_by_head');
+        const fresh = loadRequest(r.id);
+        if (fresh.actual_total == null) throw new HttpError(400, 'Укажите цену по чеку для каждой позиции');
+        db.prepare("UPDATE requests SET status='closed', reported_at=COALESCE(reported_at, ?), closed_at=?, closed_by=?, head_comment=CASE WHEN ?<>'' THEN ? ELSE head_comment END, updated_at=? WHERE id=?")
+          .run(now, now, user.id, comment, comment, now, r.id);
+        if (fresh.issued_from_cash && fresh.returned_amount > 0) {
+          cashInsert({ direction: 'in', kind: 'return', amount: fresh.returned_amount, request_id: r.id, object: r.object, comment: `Возврат остатка: ${r.title}`.slice(0, 300), user_id: user.id });
+        }
+        logEvent(user.id, 'request', r.id, 'closed', { actual_total: fresh.actual_total, comment, by_head_report: true });
         break;
       }
       case 'close':

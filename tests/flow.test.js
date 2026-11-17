@@ -181,6 +181,34 @@ test('полный цикл заявки и защита', async () => {
   assert.throws(() => db.prepare('DELETE FROM events').run(), /append-only/);
   assert.throws(() => db.prepare("UPDATE events SET action = 'x'").run(), /append-only/);
 
+  // чек приложен, цены не заполнены: «потрачено» не показывается как 0; руководитель проводит по чеку сам
+  const id3 = (await eng('POST', '/api/requests', { kind: 'purchase', title: 'Кабель', channel: 'offline', items: [{ name: 'Кабель 3х2.5', qty: 10, price: 40 }] })).data.id;
+  await head('POST', `/api/requests/${id3}/action`, { action: 'approve' });
+  assert.equal((await head('POST', `/api/requests/${id3}/action`, { action: 'accept' })).status, 400, 'без чека провести нельзя');
+  await eng('POST', '/api/files', { request_id: id3, kind: 'receipt', name: 'кабель.png', data: PNG });
+  const it3 = (await eng('GET', `/api/requests/${id3}`)).data.items[0];
+  const draft = await eng('PUT', `/api/requests/${id3}`, { part: 'report', items: [{ id: it3.id, actual_qty: 10, actual_price: '' }] });
+  assert.equal(draft.data.request.actual_total, null, 'черновик без цен не считается тратой 0 ₴');
+  assert.equal((await eng('POST', `/api/requests/${id3}/action`, { action: 'accept', items: [{ id: it3.id, actual_price: 42 }] })).status, 403);
+  assert.equal((await head('POST', `/api/requests/${id3}/action`, { action: 'accept', items: [{ id: it3.id, actual_qty: 10, actual_price: '' }] })).status, 400);
+  const acc = await head('POST', `/api/requests/${id3}/action`, { action: 'accept', items: [{ id: it3.id, actual_qty: 10, actual_price: 42 }] });
+  assert.equal(acc.data.request.status, 'closed');
+  assert.equal(acc.data.request.actual_total, 420);
+
+  // начальный остаток кассы: заявка → подтверждение (единственный руководитель может подтвердить свой)
+  const before = (await head('GET', '/api/head/cash')).data.balance;
+  assert.equal((await head('POST', '/api/openings', { target: 'cash', amount: 1500 })).status, 400, 'нужно указать, откуда деньги');
+  const op = (await head('POST', '/api/openings', { target: 'cash', amount: 1500, comment: 'Было в сейфе' })).data.id;
+  assert.equal((await head('POST', '/api/openings', { target: 'cash', amount: 10, comment: 'Ещё раз' })).status, 409);
+  assert.equal((await eng('POST', `/api/openings/${op}/decide`, { approve: true })).status, 403);
+  assert.equal((await head('GET', '/api/head/cash')).data.balance, before, 'до подтверждения в кассу не попадает');
+  await head('POST', `/api/openings/${op}/decide`, { approve: true });
+  assert.equal((await head('GET', '/api/head/cash')).data.balance, before + 1500);
+  const op2 = (await eng('POST', '/api/openings', { target: 'advance', amount: 300, comment: 'На руках' })).data.id;
+  assert.equal((await head('POST', `/api/openings/${op2}/decide`, { approve: false })).status, 400, 'отказ — с причиной');
+  await head('POST', `/api/openings/${op2}/decide`, { approve: false, comment: 'Уже учтено' });
+  assert.equal((await eng('GET', '/api/openings')).data.items.find((o) => o.id === op2).status, 'rejected');
+
   // защита от подбора пароля
   const bf = client();
   for (let k = 0; k < 5; k++) await bf('POST', '/api/login', { login: 'eng', password: 'nope' });

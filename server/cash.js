@@ -137,4 +137,64 @@ function csvRows(q) {
       nf(o.balance_after), o.category, o.object, o.request_number || o.income_number || '', o.comment, o.user_name, o.removed_at ? `да: ${o.remove_reason}` : ''])];
 }
 
-module.exports = { KINDS, MANUAL, createOp, removeOp, report, csvRows };
+// ---------- начальный остаток (по согласованию) ----------
+const TARGETS = { cash: 'Наличные в кассе БХ', advance: 'Деньги на руках (под отчёт)' };
+
+function createOpening(user, body) {
+  const target = TARGETS[body.target] ? body.target : null;
+  if (!target) throw new HttpError(400, 'Выберите, что за остаток');
+  const amount = money(body.amount, { allowZero: false });
+  if (amount == null) throw new HttpError(400, 'Укажите сумму');
+  const comment = str(body.comment, 500);
+  if (comment.length < 3) throw new HttpError(400, 'Напишите, откуда эти деньги');
+  if (db.prepare("SELECT id FROM openings WHERE user_id = ? AND target = ? AND status = 'pending'").get(user.id, target)) {
+    throw new HttpError(409, 'Такой остаток уже ждёт подтверждения');
+  }
+  const r = db.prepare('INSERT INTO openings (user_id, target, amount, comment, created_at) VALUES (?, ?, ?, ?, ?)').run(user.id, target, amount, comment, Date.now());
+  const id = Number(r.lastInsertRowid);
+  logEvent(user.id, 'opening', id, 'opening_requested', { target: TARGETS[target], amount, comment });
+  return id;
+}
+
+function decideOpening(user, id, approve, comment) {
+  needHead(user);
+  const o = db.prepare('SELECT * FROM openings WHERE id = ?').get(Number(id));
+  if (!o) throw new HttpError(404, 'Заявка на остаток не найдена');
+  if (o.status !== 'pending') throw new HttpError(409, 'Уже рассмотрено');
+  // Свой остаток руководитель подтверждает сам, только если других руководителей нет.
+  if (o.user_id === user.id && db.prepare("SELECT COUNT(*) n FROM users WHERE role = 'head' AND active = 1 AND id != ?").get(user.id).n) {
+    throw new HttpError(403, 'Свой остаток подтверждает другой руководитель');
+  }
+  const why = str(comment, 500);
+  if (!approve && !why) throw new HttpError(400, 'Напишите причину отказа');
+  const author = db.prepare('SELECT id, name FROM users WHERE id = ?').get(o.user_id);
+  const now = Date.now();
+  return tx(() => {
+    let cashOpId = null; let requestId = null;
+    if (approve && o.target === 'cash') {
+      cashOpId = L.cashInsert({ direction: 'in', kind: 'topup', amount: o.amount, comment: `Начальный остаток (внёс ${author.name}): ${o.comment}`.slice(0, 300), user_id: user.id });
+    }
+    if (approve && o.target === 'advance') {
+      // Деньги на руках становятся подотчётом: сотрудник отчитывается по ним чеками, как по выданным.
+      const r = db.prepare(`INSERT INTO requests (kind, channel, title, purpose, user_id, status, amount, approved_amount, issued_amount, issued_from_cash,
+          edit_until, created_at, updated_at, decided_at, decided_by) VALUES ('money', 'offline', ?, ?, ?, 'issued', ?, ?, ?, 0, ?, ?, ?, ?, ?)`)
+        .run('Начальный остаток на руках', o.comment, o.user_id, o.amount, o.amount, o.amount, now, now, now, now, user.id);
+      requestId = Number(r.lastInsertRowid);
+      logEvent(user.id, 'request', requestId, 'opening_issued', { amount: o.amount, comment: o.comment });
+    }
+    db.prepare('UPDATE openings SET status = ?, decided_at = ?, decided_by = ?, decision_comment = ?, cash_op_id = ?, request_id = ? WHERE id = ?')
+      .run(approve ? 'approved' : 'rejected', now, user.id, why, cashOpId, requestId, o.id);
+    logEvent(user.id, 'opening', o.id, approve ? 'opening_approved' : 'opening_rejected', { target: TARGETS[o.target], amount: o.amount, comment: why, author: author.name });
+    return { request_id: requestId, cash_op_id: cashOpId, user_id: o.user_id };
+  });
+}
+
+function listOpenings(user) {
+  const where = user.role === 'head' ? "o.status = 'pending' OR o.created_at > ?" : 'o.user_id = ?';
+  const arg = user.role === 'head' ? Date.now() - 30 * 864e5 : user.id;
+  return db.prepare(`SELECT o.*, u.name user_name, d.name decided_name FROM openings o JOIN users u ON u.id = o.user_id LEFT JOIN users d ON d.id = o.decided_by
+    WHERE ${where} ORDER BY o.status = 'pending' DESC, o.id DESC LIMIT 50`).all(arg)
+    .map((o) => ({ ...o, target_text: TARGETS[o.target] }));
+}
+
+module.exports = { KINDS, MANUAL, TARGETS, createOp, removeOp, report, csvRows, createOpening, decideOpening, listOpenings };
