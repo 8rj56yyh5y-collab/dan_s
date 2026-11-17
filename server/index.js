@@ -77,7 +77,7 @@ function readBody(req) {
 }
 const needUser = (u) => { if (!u) throw new HttpError(401, 'Войдите в систему'); if (u.must_change_pw) throw new HttpError(428, 'Сначала смените временный пароль'); return u; };
 const needHead = (u) => { needUser(u); if (u.role !== 'head') throw new HttpError(403, 'Раздел только для руководителя'); return u; };
-const publicUser = (u) => u && ({ id: u.id, login: u.login, name: u.name, position: u.position, phone: u.phone, role: u.role, must_change_pw: !!u.must_change_pw });
+const publicUser = (u) => u && ({ id: u.id, login: u.login, name: u.name, position: u.position, phone: u.phone, role: u.role, cashier: !!u.cashier, must_change_pw: !!u.must_change_pw });
 
 // ---------- представление записей ----------
 const userName = (id) => (id ? db.prepare('SELECT name FROM users WHERE id = ?').get(id)?.name || '' : '');
@@ -199,7 +199,8 @@ function staffHome(user) {
     advance: adv ? { balance: adv.balance, open_count: adv.open_count } : { balance: 0, open_count: 0 },
     month: { spent: L.round2(spent.s), spent_n: spent.n, income: L.round2(inc.s), income_n: inc.n },
     corrections: db.prepare("SELECT c.*, CASE c.entity WHEN 'request' THEN printf('З-%05d', c.entity_id) ELSE printf('Д-%05d', c.entity_id) END number FROM corrections c WHERE c.user_id = ? ORDER BY c.id DESC LIMIT 5").all(user.id),
-    openings: cash.listOpenings(user).slice(0, 5),
+    openings: cash.listOpenings(user).filter((o) => o.user_id === user.id || o.status === 'pending').slice(0, 8),
+    cash_balance: user.cashier ? L.cashBalance() : null,
   };
 }
 function headHome(user) {
@@ -228,7 +229,7 @@ function eventsFeed(q) {
 
 // ---------- сотрудники ----------
 function listUsers() {
-  return db.prepare(`SELECT u.id, u.login, u.name, u.position, u.phone, u.role, u.active, u.must_change_pw, u.created_at, u.last_login, (u.tg_chat_id IS NOT NULL) telegram,
+  return db.prepare(`SELECT u.id, u.login, u.name, u.position, u.phone, u.role, u.active, u.must_change_pw, u.created_at, u.last_login, u.cashier, (u.tg_chat_id IS NOT NULL) telegram,
       (SELECT COUNT(*) FROM requests r WHERE r.user_id = u.id) requests,
       (SELECT COALESCE(SUM(actual_total),0) FROM requests r WHERE r.user_id = u.id AND r.status='closed')
         + (SELECT COALESCE(SUM(amount),0) FROM delivery_costs d WHERE d.req_user = u.id) spent
@@ -257,13 +258,14 @@ function updateUser(head, id, body) {
     phone: body.phone !== undefined ? str(body.phone, 30) : u.phone,
     role: body.role === 'head' || body.role === 'staff' ? body.role : u.role,
     active: body.active === undefined ? u.active : body.active ? 1 : 0,
+    cashier: body.cashier === undefined ? u.cashier : body.cashier ? 1 : 0,
   };
   if (u.id === head.id && (next.role !== 'head' || !next.active)) throw new HttpError(400, 'Нельзя снять права или отключить самого себя');
   if (u.role === 'head' && (next.role !== 'head' || !next.active)) {
     const heads = db.prepare("SELECT COUNT(*) n FROM users WHERE role='head' AND active=1").get().n;
     if (heads <= 1) throw new HttpError(400, 'Должен остаться хотя бы один руководитель');
   }
-  db.prepare('UPDATE users SET name=?, position=?, phone=?, role=?, active=? WHERE id=?').run(next.name, next.position, next.phone, next.role, next.active, u.id);
+  db.prepare('UPDATE users SET name=?, position=?, phone=?, role=?, active=?, cashier=? WHERE id=?').run(next.name, next.position, next.phone, next.role, next.active, next.cashier, u.id);
   if (!next.active || next.role !== u.role) auth.destroyUserSessions(u.id);
   const changes = Object.keys(next).filter((k) => String(next[k]) !== String(u[k])).map((k) => ({ field: k, from: u[k], to: next[k] }));
   if (changes.length) logEvent(head.id, 'user', u.id, 'user_updated', { changes });
@@ -434,10 +436,22 @@ async function api(req, res, url) {
   // корректировки
   if (p === '/api/corrections' && m === 'POST') { const id = L.requestCorrection(user, body); tg.notify.correctionRequested(id); return ok({ id }); }
 
+  // касса: руководитель и кассир
+  if (p === '/api/cash' && m === 'GET') { if (!cash.canCash(user)) throw new HttpError(403, 'Касса доступна руководителю и кассиру'); return ok(cash.report(q)); }
+  if (p === '/api/cash' && m === 'POST') { const r = cash.createOp(user, body); tg.notify.cashOp(r.id, user.id, body.kind, r.diff); return ok({ ...r, balance: L.cashBalance() }); }
+  if (p === '/api/cash/export' && m === 'GET') {
+    if (!cash.canCash(user)) throw new HttpError(403, 'Касса доступна руководителю и кассиру');
+    res.writeHead(200, { ...SECURITY_HEADERS, 'Content-Type': 'text/csv; charset=utf-8', 'Cache-Control': 'no-store',
+      'Content-Disposition': `attachment; filename="bh-cash-${new Date().toISOString().slice(0, 10)}.csv"` });
+    logEvent(user.id, 'export', null, 'exported', { type: 'cash' });
+    return res.end(csv(cash.csvRows(q)));
+  }
+  if ((mt = p.match(/^\/api\/openings\/(\d+)\/to-cash$/)) && m === 'POST') { cash.moveOpeningToCash(user, mt[1]); return ok({ balance: L.cashBalance() }); }
+
   // начальный остаток (по согласованию)
   if (p === '/api/openings' && m === 'GET') return ok({ items: cash.listOpenings(user) });
   if (p === '/api/openings' && m === 'POST') { const id = cash.createOpening(user, body); tg.notify.openingRequested(id); return ok({ id }); }
-  if ((mt = p.match(/^\/api\/openings\/(\d+)\/decide$/)) && m === 'POST') { const r = cash.decideOpening(user, mt[1], !!body.approve, body.comment); tg.notify.openingDecided(Number(mt[1])); return ok(r); }
+  if ((mt = p.match(/^\/api\/openings\/(\d+)\/decide$/)) && m === 'POST') { const r = cash.decideOpening(user, mt[1], !!body.approve, body.comment, body.target); tg.notify.openingDecided(Number(mt[1])); return ok(r); }
 
   // Telegram: привязка своего аккаунта
   if (p === '/api/me/telegram' && m === 'GET') return ok(tg.linkInfo(user.id));
@@ -457,8 +471,7 @@ async function api(req, res, url) {
     if ((mt = p.match(/^\/api\/head\/users\/(\d+)$/)) && m === 'PUT') { updateUser(user, mt[1], body); return ok(); }
     if ((mt = p.match(/^\/api\/head\/users\/(\d+)\/reset$/)) && m === 'POST') return ok(resetPassword(user, mt[1]));
     if (p === '/api/head/settings' && m === 'PUT') return ok(updateSettings(user, body));
-    if (p === '/api/head/cash' && m === 'GET') return ok(cash.report(q));
-    if (p === '/api/head/cash' && m === 'POST') { const r = cash.createOp(user, body); return ok({ ...r, balance: L.cashBalance() }); }
+
     if ((mt = p.match(/^\/api\/head\/cash\/(\d+)\/void$/)) && m === 'POST') { cash.removeOp(user, mt[1], body.reason); return ok({ balance: L.cashBalance() }); }
     if (p === '/api/head/export' && m === 'GET') {
       const data = exportCsv(q);

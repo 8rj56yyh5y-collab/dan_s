@@ -120,11 +120,11 @@ test('полный цикл заявки и защита', async () => {
   await head('POST', `/api/requests/${id2}/action`, { action: 'approve' });
   // касса пуста — выдать из неё нельзя; пополняем и выдаём
   assert.equal((await head('POST', `/api/requests/${id2}/action`, { action: 'issue', issued_amount: 500 })).status, 409);
-  assert.equal((await eng('POST', '/api/head/cash', { kind: 'topup', amount: 1000 })).status, 403);
-  assert.equal((await eng('GET', '/api/head/cash')).status, 403);
-  assert.equal((await head('POST', '/api/head/cash', { kind: 'topup', amount: 1000, comment: 'Из офиса' })).data.balance, 1000);
+  assert.equal((await eng('POST', '/api/cash', { kind: 'topup', amount: 1000 })).status, 403);
+  assert.equal((await eng('GET', '/api/cash')).status, 403);
+  assert.equal((await head('POST', '/api/cash', { kind: 'topup', amount: 1000, comment: 'Из офиса' })).data.balance, 1000);
   assert.equal((await head('POST', `/api/requests/${id2}/action`, { action: 'issue', issued_amount: 500 })).status, 200);
-  assert.equal((await head('GET', '/api/head/cash')).data.balance, 500);
+  assert.equal((await head('GET', '/api/cash')).data.balance, 500);
   await eng('PUT', `/api/requests/${id2}`, { part: 'report', items: [{ name: 'Электроды', qty: 1, actual_price: 450 }], returned_amount: 50 });
   await eng('POST', '/api/files', { request_id: id2, kind: 'receipt', name: 'тот-же.png', data: PNG });
   await eng('POST', `/api/requests/${id2}/action`, { action: 'submit_report' });
@@ -132,20 +132,20 @@ test('полный цикл заявки и защита', async () => {
   assert.ok(d2.flags.some((x) => x.code === 'dup_receipt'));
   await head('POST', `/api/requests/${id2}/action`, { action: 'close' });
   // остаток подотчёта (50) вернулся в кассу при проведении
-  let cr = (await head('GET', '/api/head/cash')).data;
+  let cr = (await head('GET', '/api/cash')).data;
   assert.equal(cr.balance, 550);
   assert.ok(cr.items.some((o) => o.kind === 'return' && o.amount === 50));
   // ручные операции: расход без описания и больше остатка — нельзя
-  assert.equal((await head('POST', '/api/head/cash', { kind: 'expense', amount: 100 })).status, 400);
-  assert.equal((await head('POST', '/api/head/cash', { kind: 'withdraw', amount: 9999 })).status, 409);
-  const ce = await head('POST', '/api/head/cash', { kind: 'expense', amount: 100, category: 'Материалы', comment: 'Краска', file: { name: 'чек.png', data: PNG } });
+  assert.equal((await head('POST', '/api/cash', { kind: 'expense', amount: 100 })).status, 400);
+  assert.equal((await head('POST', '/api/cash', { kind: 'withdraw', amount: 9999 })).status, 409);
+  const ce = await head('POST', '/api/cash', { kind: 'expense', amount: 100, category: 'Материалы', comment: 'Краска', file: { name: 'чек.png', data: PNG } });
   assert.equal(ce.data.balance, 450);
   // пересчёт: по факту 440 → недостача 10
-  const rc = await head('POST', '/api/head/cash', { kind: 'recount', counted: 440 });
+  const rc = await head('POST', '/api/cash', { kind: 'recount', counted: 440 });
   assert.equal(rc.data.diff, -10);
   assert.equal(rc.data.balance, 440);
   // автоматическую операцию отменить нельзя, ручную — с причиной
-  const issueOp = (await head('GET', '/api/head/cash')).data.items.find((o) => o.kind === 'issue');
+  const issueOp = (await head('GET', '/api/cash')).data.items.find((o) => o.kind === 'issue');
   assert.equal((await head('POST', `/api/head/cash/${issueOp.id}/void`, { reason: 'x' })).status, 409);
   const expOverview = (await head('GET', '/api/head/overview')).data.current;
   assert.equal(expOverview.cash_expenses, 100);
@@ -178,7 +178,7 @@ test('полный цикл заявки и защита', async () => {
   const inc = await eng('POST', '/api/incomes', { date: new Date().toISOString().slice(0, 10), title: 'Навес', amount: 5000, method: 'cash' });
   await head('POST', `/api/incomes/${inc.data.id}/action`, { action: 'confirm' });
   // доход наличными попал в кассу
-  assert.equal((await head('GET', '/api/head/cash')).data.balance, 5540);
+  assert.equal((await head('GET', '/api/cash')).data.balance, 5540);
   const ov = (await head('GET', '/api/head/overview')).data;
   assert.equal(ov.current.income, 5000);
   assert.equal(ov.current.expenses, 845);
@@ -217,18 +217,41 @@ test('полный цикл заявки и защита', async () => {
   assert.ok(d4.flags.some((x) => x.code === 'no_breakdown'));
 
   // начальный остаток кассы: заявка → подтверждение (единственный руководитель может подтвердить свой)
-  const before = (await head('GET', '/api/head/cash')).data.balance;
+  const before = (await head('GET', '/api/cash')).data.balance;
   assert.equal((await head('POST', '/api/openings', { target: 'cash', amount: 1500 })).status, 400, 'нужно указать, откуда деньги');
   const op = (await head('POST', '/api/openings', { target: 'cash', amount: 1500, comment: 'Было в сейфе' })).data.id;
   assert.equal((await head('POST', '/api/openings', { target: 'cash', amount: 10, comment: 'Ещё раз' })).status, 409);
   assert.equal((await eng('POST', `/api/openings/${op}/decide`, { approve: true })).status, 403);
-  assert.equal((await head('GET', '/api/head/cash')).data.balance, before, 'до подтверждения в кассу не попадает');
+  assert.equal((await head('GET', '/api/cash')).data.balance, before, 'до подтверждения в кассу не попадает');
   await head('POST', `/api/openings/${op}/decide`, { approve: true });
-  assert.equal((await head('GET', '/api/head/cash')).data.balance, before + 1500);
+  assert.equal((await head('GET', '/api/cash')).data.balance, before + 1500);
   const op2 = (await eng('POST', '/api/openings', { target: 'advance', amount: 300, comment: 'На руках' })).data.id;
   assert.equal((await head('POST', `/api/openings/${op2}/decide`, { approve: false })).status, 400, 'отказ — с причиной');
   await head('POST', `/api/openings/${op2}/decide`, { approve: false, comment: 'Уже учтено' });
   assert.equal((await eng('GET', '/api/openings')).data.items.find((o) => o.id === op2).status, 'rejected');
+
+  // кассир: инженер ведёт кассу, руководитель видит всё и одни отменяет операции
+  assert.equal((await eng('GET', '/api/cash')).status, 403, 'без отметки «кассир» кассы не видно');
+  await head('PUT', `/api/head/users/${u1.id}`, { cashier: true });
+  await eng('POST', '/api/logout'); await eng('POST', '/api/login', { login: 'eng', password: 'Engineer123' });
+  const bal0 = (await eng('GET', '/api/cash')).data.balance;
+  const ct = await eng('POST', '/api/cash', { kind: 'topup', amount: 200, comment: 'Из сейфа' });
+  assert.equal(ct.data.balance, bal0 + 200);
+  const cx = await eng('POST', '/api/cash', { kind: 'expense', amount: 50, comment: 'Вода', category: 'Хозтовары' });
+  assert.equal((await head('GET', '/api/cash')).data.items[0].user_name, 'Инженер', 'руководитель видит операции кассира');
+  assert.equal((await eng('POST', `/api/head/cash/${cx.data.id}/void`, { reason: 'x' })).status, 403, 'отменяет только руководитель');
+  assert.equal((await other('GET', '/api/cash')).status, 403);
+  // остаток подтвердили «под отчёт», а это была касса — переносим, пока по нему не отчитывались
+  const op3 = (await eng('POST', '/api/openings', { target: 'advance', amount: 400, comment: 'В сейфе лежали' })).data.id;
+  await head('POST', `/api/openings/${op3}/decide`, { approve: true });
+  const balBefore = (await head('GET', '/api/cash')).data.balance;
+  assert.equal((await head('POST', `/api/openings/${op3}/to-cash`)).data.balance, balBefore + 400);
+  assert.equal((await head('POST', `/api/openings/${op3}/to-cash`)).status, 409, 'повторно нельзя');
+  // при подтверждении руководитель сам выбирает, куда зачислить
+  const op4 = (await eng('POST', '/api/openings', { target: 'advance', amount: 100, comment: 'Ещё' })).data.id;
+  const b4 = (await head('GET', '/api/cash')).data.balance;
+  await head('POST', `/api/openings/${op4}/decide`, { approve: true, target: 'cash' });
+  assert.equal((await head('GET', '/api/cash')).data.balance, b4 + 100);
 
   // защита от подбора пароля
   const bf = client();
