@@ -253,6 +253,17 @@ test('полный цикл заявки и защита', async () => {
   await head('POST', `/api/openings/${op4}/decide`, { approve: true, target: 'cash' });
   assert.equal((await head('GET', '/api/cash')).data.balance, b4 + 100);
 
+  // история операций: доходы, расходы по заявкам, доставка и касса в одной ленте
+  const feed = (await head('GET', '/api/head/money')).data;
+  assert.ok(feed.items.some((x) => x.type === 'income' && x.amount === 5000));
+  assert.ok(feed.items.some((x) => x.type === 'expense' && x.source === `З-0000${id3}`));
+  assert.ok(feed.items.some((x) => x.kind_text.startsWith('Доставка')));
+  assert.ok(feed.items.some((x) => x.cash && x.title === 'Вода' && x.dir === 'out'));
+  assert.equal(feed.totals.profit, Math.round((feed.totals.income - feed.totals.expenses) * 100) / 100);
+  assert.ok((await head('GET', '/api/head/money?type=cash')).data.items.every((x) => x.cash));
+  assert.ok((await head('GET', '/api/head/money?type=in')).data.items.every((x) => x.dir === 'in'));
+  assert.equal((await eng('GET', '/api/head/money')).status, 403, 'историю всех денег видит только руководитель');
+
   // защита от подбора пароля
   const bf = client();
   for (let k = 0; k < 5; k++) await bf('POST', '/api/login', { login: 'eng', password: 'nope' });

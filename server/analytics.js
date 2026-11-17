@@ -194,4 +194,52 @@ function controlFeed() {
   return { items: out, staff: Object.values(staff).sort((a, b) => b.high - a.high) };
 }
 
-module.exports = { overview, advances, priceCatalog, controlFeed, range };
+// История операций: все движения денег в одной ленте.
+// pl — влияет ли на прибыль (доходы и расходы); касса без pl — перемещение денег (пополнение, выдача, возврат, сдача).
+const CASH_TITLES = { topup: 'Пополнение кассы', income: 'Доход наличными в кассу', return: 'Возврат остатка в кассу', issue: 'Выдано из кассы под отчёт',
+  expense: 'Расход из кассы', withdraw: 'Сдано из кассы', recount: 'Пересчёт кассы' };
+function moneyFeed(q = {}) {
+  const r = range(q);
+  const rows = [];
+  const num = (n) => `${String(n).padStart(5, '0')}`;
+  for (const x of db.prepare(`SELECT r.id, r.title, r.object, r.category, r.kind, r.channel, r.actual_total, r.closed_at, u.name user_name, r.user_id
+      FROM requests r JOIN users u ON u.id = r.user_id WHERE r.status = 'closed' AND r.closed_at BETWEEN ? AND ?`).all(r.fromTs, r.toTs)) {
+    rows.push({ key: `r${x.id}`, ts: x.closed_at, type: 'expense', pl: true, dir: 'out', amount: x.actual_total || 0, title: x.title,
+      kind_text: x.kind === 'money' ? 'Расход по подотчёту' : 'Покупка', source: `З-${num(x.id)}`, link: `/r/${x.id}`, user_name: x.user_name, user_id: x.user_id,
+      object: x.object, category: x.category });
+  }
+  for (const x of db.prepare(`SELECT d.id, d.request_id, d.amount, d.ts, r.title, r.object, r.user_id, u.name user_name, dl.carrier, dl.ttn
+      FROM delivery_costs d JOIN requests r ON r.id = d.request_id JOIN users u ON u.id = r.user_id JOIN deliveries dl ON dl.id = d.id WHERE d.ts BETWEEN ? AND ?`).all(r.fromTs, r.toTs)) {
+    rows.push({ key: `d${x.id}`, ts: x.ts, type: 'expense', pl: true, dir: 'out', amount: x.amount, title: `Доставка: ${x.title}`, kind_text: `Доставка${x.carrier ? ` · ${x.carrier}` : ''}`,
+      source: `З-${num(x.request_id)}`, link: `/r/${x.request_id}`, user_name: x.user_name, user_id: x.user_id, object: x.object, category: 'Доставка' });
+  }
+  for (const x of db.prepare("SELECT i.*, u.name user_name FROM incomes i JOIN users u ON u.id = i.user_id WHERE i.status = 'confirmed' AND i.date BETWEEN ? AND ?").all(r.from, r.to)) {
+    rows.push({ key: `i${x.id}`, ts: Math.max(Date.parse(`${x.date}T12:00:00`), 0), type: 'income', pl: true, dir: 'in', amount: x.amount, title: x.title,
+      kind_text: `Доход · ${{ cash: 'наличные', card: 'карта', account: 'на счёт' }[x.method]}`, source: `Д-${num(x.id)}`, link: `/income/${x.id}`, user_name: x.user_name, user_id: x.user_id,
+      object: x.object, category: x.category, client: x.client });
+  }
+  for (const x of db.prepare(`SELECT c.*, u.name user_name FROM cash_ops c JOIN users u ON u.id = c.user_id
+      WHERE c.removed_at IS NULL AND c.ts BETWEEN ? AND ?`).all(r.fromTs, r.toTs)) {
+    rows.push({ key: `c${x.id}`, ts: x.ts, type: x.kind === 'expense' ? 'expense' : 'cash', pl: x.kind === 'expense', cash: true, dir: x.direction, amount: x.amount,
+      title: x.comment || CASH_TITLES[x.kind], kind_text: CASH_TITLES[x.kind], source: x.request_id ? `З-${num(x.request_id)}` : x.income_id ? `Д-${num(x.income_id)}` : 'Касса',
+      link: x.request_id ? `/r/${x.request_id}` : x.income_id ? `/income/${x.income_id}` : '/cash', user_name: x.user_name, user_id: x.user_id, object: x.object, category: x.category,
+      // доход наличными уже есть в ленте как доход — в кассе показываем его как движение, но не дублируем в итогах прибыли
+      dup: x.kind === 'income' });
+  }
+  let list = rows;
+  if (q.type === 'in') list = list.filter((x) => x.dir === 'in');
+  else if (q.type === 'out') list = list.filter((x) => x.dir === 'out');
+  else if (q.type === 'cash') list = list.filter((x) => x.cash);
+  else if (q.type === 'pl') list = list.filter((x) => x.pl);
+  if (q.user) list = list.filter((x) => String(x.user_id) === String(q.user));
+  if (q.q) { const t = String(q.q).toLowerCase(); list = list.filter((x) => `${x.title} ${x.source} ${x.object || ''} ${x.category || ''} ${x.client || ''}`.toLowerCase().includes(t)); }
+  list.sort((a, b) => b.ts - a.ts);
+  const sum = (f) => round2(rows.filter(f).reduce((t, x) => t + x.amount, 0));
+  const income = sum((x) => x.type === 'income');
+  const expenses = sum((x) => x.type === 'expense');
+  const cashIn = sum((x) => x.cash && x.dir === 'in');
+  const cashOut = sum((x) => x.cash && x.dir === 'out');
+  return { range: r, totals: { income, expenses, profit: round2(income - expenses), cash_in: cashIn, cash_out: cashOut }, items: list.slice(0, 1000).map((x) => ({ ...x, amount: round2(x.amount) })) };
+}
+
+module.exports = { overview, advances, priceCatalog, controlFeed, range, moneyFeed };
