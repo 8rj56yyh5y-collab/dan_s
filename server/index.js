@@ -10,6 +10,7 @@ const L = require('./logic');
 const A = require('./analytics');
 const ai = require('./ai');
 const cash = require('./cash');
+const tg = require('./telegram');
 
 const { HttpError, str } = L;
 const PORT = Number(process.env.PORT) || 3000;
@@ -197,14 +198,16 @@ function staffHome(user) {
     advance: adv ? { balance: adv.balance, open_count: adv.open_count } : { balance: 0, open_count: 0 },
     month: { spent: L.round2(spent.s), spent_n: spent.n, income: L.round2(inc.s), income_n: inc.n },
     corrections: db.prepare("SELECT c.*, CASE c.entity WHEN 'request' THEN printf('З-%05d', c.entity_id) ELSE printf('Д-%05d', c.entity_id) END number FROM corrections c WHERE c.user_id = ? ORDER BY c.id DESC LIMIT 5").all(user.id),
+    openings: cash.listOpenings(user).slice(0, 5),
   };
 }
-function headHome() {
+function headHome(user) {
   const q = (statuses) => db.prepare(`SELECT r.*, u.name user_name FROM requests r JOIN users u ON u.id = r.user_id WHERE r.status IN (${statuses.map(() => '?').join(',')}) ORDER BY r.updated_at ASC LIMIT 50`).all(...statuses).map(requestRow);
   return {
     to_approve: q(['pending']),
     to_close: q(['review']),
     incomes: db.prepare("SELECT i.*, u.name user_name FROM incomes i JOIN users u ON u.id = i.user_id WHERE i.status='new' ORDER BY i.id LIMIT 50").all().map((i) => ({ ...i, number: L.incNumber(i.id) })),
+    openings: cash.listOpenings(user).filter((o) => o.status === 'pending'),
     corrections: db.prepare(`SELECT c.*, u.name user_name, CASE c.entity WHEN 'request' THEN printf('З-%05d', c.entity_id) ELSE printf('Д-%05d', c.entity_id) END number
       FROM corrections c JOIN users u ON u.id = c.user_id WHERE c.status='pending' ORDER BY c.id`).all(),
     overview: A.overview({}),
@@ -224,7 +227,7 @@ function eventsFeed(q) {
 
 // ---------- сотрудники ----------
 function listUsers() {
-  return db.prepare(`SELECT u.id, u.login, u.name, u.position, u.phone, u.role, u.active, u.must_change_pw, u.created_at, u.last_login,
+  return db.prepare(`SELECT u.id, u.login, u.name, u.position, u.phone, u.role, u.active, u.must_change_pw, u.created_at, u.last_login, (u.tg_chat_id IS NOT NULL) telegram,
       (SELECT COUNT(*) FROM requests r WHERE r.user_id = u.id) requests,
       (SELECT COALESCE(SUM(actual_total),0) FROM requests r WHERE r.user_id = u.id AND r.status='closed')
         + (SELECT COALESCE(SUM(amount),0) FROM delivery_costs d WHERE d.req_user = u.id) spent
@@ -365,19 +368,26 @@ async function api(req, res, url) {
 
   needUser(user);
   if (p === '/api/settings' && m === 'GET') { const s = getSettings(); return ok({ ...s, currency: CURRENCY, ai: ai.enabled() }); }
-  if (p === '/api/home' && m === 'GET') return ok(user.role === 'head' ? headHome() : staffHome(user));
+  if (p === '/api/home' && m === 'GET') return ok(user.role === 'head' ? headHome(user) : staffHome(user));
 
   // заявки
   if (p === '/api/requests' && m === 'GET') return ok(listRequests(user, q));
-  if (p === '/api/requests' && m === 'POST') return ok({ id: L.createRequest(user, body) });
+  if (p === '/api/requests' && m === 'POST') { const id = L.createRequest(user, body); tg.notify.requestCreated(id); return ok({ id }); }
   if ((mt = p.match(/^\/api\/requests\/(\d+)$/))) {
     if (m === 'GET') return ok(requestDetail(user, mt[1]));
-    if (m === 'PUT') { const r = L.updateRequest(user, mt[1], body); return ok({ ...r, request: requestDetail(user, mt[1]) }); }
+    if (m === 'PUT') { const r = L.updateRequest(user, mt[1], body); if (r.reapprove) tg.notify.requestCreated(Number(mt[1]), true); return ok({ ...r, request: requestDetail(user, mt[1]) }); }
   }
   if ((mt = p.match(/^\/api\/requests\/(\d+)\/action$/)) && m === 'POST') {
     const a = String(body.action || '');
-    if (['resubmit', 'cancel', 'submit_report'].includes(a)) L.staffAction(user, mt[1], a, body);
-    else L.headAction(user, mt[1], a, body);
+    const rid = Number(mt[1]);
+    if (['resubmit', 'cancel', 'submit_report'].includes(a)) {
+      L.staffAction(user, rid, a, body);
+      if (a === 'resubmit') tg.notify.requestCreated(rid, true);
+      if (a === 'submit_report') tg.notify.reportSubmitted(rid);
+    } else {
+      L.headAction(user, rid, a, body);
+      tg.notify.requestDecided(rid, a, user.id, str(body.comment, 1000));
+    }
     return ok({ request: requestDetail(user, mt[1]) });
   }
 
@@ -402,26 +412,37 @@ async function api(req, res, url) {
 
   // доходы
   if (p === '/api/incomes' && m === 'GET') return ok(listIncomes(user, q));
-  if (p === '/api/incomes' && m === 'POST') return ok({ id: L.createIncome(user, body) });
+  if (p === '/api/incomes' && m === 'POST') { const id = L.createIncome(user, body); tg.notify.incomeCreated(id); return ok({ id }); }
   if ((mt = p.match(/^\/api\/incomes\/(\d+)$/))) {
     if (m === 'GET') return ok(incomeDetail(user, mt[1]));
     if (m === 'PUT') { L.updateIncome(user, mt[1], body); return ok({ income: incomeDetail(user, mt[1]) }); }
   }
   if ((mt = p.match(/^\/api\/incomes\/(\d+)\/action$/)) && m === 'POST') {
     L.headIncomeAction(user, mt[1], String(body.action || ''), body);
+    tg.notify.incomeDecided(Number(mt[1]), String(body.action || ''), user.id);
     return ok({ income: incomeDetail(user, mt[1]) });
   }
 
   // доставка
-  if ((mt = p.match(/^\/api\/requests\/(\d+)\/deliveries$/)) && m === 'POST') { L.addDelivery(user, mt[1], body); return ok({ request: requestDetail(user, mt[1]) }); }
+  if ((mt = p.match(/^\/api\/requests\/(\d+)\/deliveries$/)) && m === 'POST') { L.addDelivery(user, mt[1], body); tg.notify.deliveryAdded(Number(mt[1]), user.id, L.money(body.amount)); return ok({ request: requestDetail(user, mt[1]) }); }
   if ((mt = p.match(/^\/api\/deliveries\/(\d+)$/)) && m === 'DELETE') {
     const rid = db.prepare('SELECT request_id FROM deliveries WHERE id = ?').get(Number(mt[1]))?.request_id;
     L.removeDelivery(user, mt[1]); return ok({ request: requestDetail(user, rid) });
   }
 
   // корректировки
-  if (p === '/api/corrections' && m === 'POST') return ok({ id: L.requestCorrection(user, body) });
-  if ((mt = p.match(/^\/api\/corrections\/(\d+)\/decide$/)) && m === 'POST') { L.decideCorrection(user, mt[1], !!body.approve, body.comment); return ok(); }
+  if (p === '/api/corrections' && m === 'POST') { const id = L.requestCorrection(user, body); tg.notify.correctionRequested(id); return ok({ id }); }
+
+  // начальный остаток (по согласованию)
+  if (p === '/api/openings' && m === 'GET') return ok({ items: cash.listOpenings(user) });
+  if (p === '/api/openings' && m === 'POST') { const id = cash.createOpening(user, body); tg.notify.openingRequested(id); return ok({ id }); }
+  if ((mt = p.match(/^\/api\/openings\/(\d+)\/decide$/)) && m === 'POST') { const r = cash.decideOpening(user, mt[1], !!body.approve, body.comment); tg.notify.openingDecided(Number(mt[1])); return ok(r); }
+
+  // Telegram: привязка своего аккаунта
+  if (p === '/api/me/telegram' && m === 'GET') return ok(tg.linkInfo(user.id));
+  if (p === '/api/me/telegram' && m === 'POST') return ok(tg.createLink(user.id));
+  if (p === '/api/me/telegram' && m === 'DELETE') { tg.unlink(user.id); return ok(tg.linkInfo(user.id)); }
+  if ((mt = p.match(/^\/api\/corrections\/(\d+)\/decide$/)) && m === 'POST') { L.decideCorrection(user, mt[1], !!body.approve, body.comment); tg.notify.correctionDecided(Number(mt[1])); return ok(); }
 
   // ----- только руководитель -----
   if (p.startsWith('/api/head/')) {
@@ -486,6 +507,7 @@ if (require.main === module) {
   bootstrap();
   if (process.env.DEMO === '1' && db.prepare('SELECT COUNT(*) n FROM requests').get().n === 0) require('./demo').seed();
   createServer().listen(PORT, () => console.log(`БХ Учёт v${VERSION}: http://localhost:${PORT}`));
+  tg.start();
 }
 
 module.exports = { createServer, bootstrap, DEFAULT_SETTINGS };

@@ -29,6 +29,9 @@ services:
         sync: false
       - key: HEAD_NAME
         sync: false
+      # Telegram-бот для уведомлений (необязательно, см. README → «Telegram-бот»):
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
       # Распознавание чеков ИИ (необязательно):
       - key: ANTHROPIC_API_KEY
         sync: false

@@ -406,3 +406,4 @@ textarea.input { min-height: 84px; }
 .hide-d { display: none; }
 @media (max-width: 860px) { .hide-d { display: inline; } }
 @media (max-width: 860px) { .shell { background: none; } }
+.theme-switch { align-items: center; align-self: start; }

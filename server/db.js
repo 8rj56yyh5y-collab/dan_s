@@ -170,6 +170,20 @@ CREATE INDEX IF NOT EXISTS cash_ts ON cash_ops(ts);
 CREATE INDEX IF NOT EXISTS cash_req ON cash_ops(request_id);
 CREATE INDEX IF NOT EXISTS cash_inc ON cash_ops(income_id);
 
+-- Начальный остаток при старте работы: заявка → подтверждение руководителем.
+-- target: cash — наличные в кассе БХ; advance — деньги на руках у сотрудника (станут подотчётом).
+CREATE TABLE IF NOT EXISTS openings (
+  id INTEGER PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  target TEXT NOT NULL CHECK (target IN ('cash','advance')),
+  amount REAL NOT NULL CHECK (amount > 0),
+  comment TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','rejected')),
+  created_at INTEGER NOT NULL,
+  decided_at INTEGER, decided_by INTEGER, decision_comment TEXT NOT NULL DEFAULT '',
+  cash_op_id INTEGER, request_id INTEGER
+);
+
 -- Запросы на корректировку после окончания окна правки.
 CREATE TABLE IF NOT EXISTS corrections (
   id INTEGER PRIMARY KEY,
@@ -210,6 +224,10 @@ function addColumn(table, column, ddl) {
   if (!cols.includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
 }
 addColumn('files', 'cash_op_id', 'cash_op_id INTEGER REFERENCES cash_ops(id)');
+addColumn('users', 'tg_chat_id', 'tg_chat_id TEXT');
+addColumn('users', 'tg_username', 'tg_username TEXT');
+addColumn('users', 'tg_link_code', 'tg_link_code TEXT');
+addColumn('users', 'tg_link_expires', 'tg_link_expires INTEGER');
 addColumn('requests', 'issued_from_cash', 'issued_from_cash INTEGER NOT NULL DEFAULT 0');
 
 const DEFAULT_SETTINGS = {
