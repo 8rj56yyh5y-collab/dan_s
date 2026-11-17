@@ -101,7 +101,10 @@ const notify = {
     const r = L.loadRequest(id);
     const plan = r.approved_amount ?? r.amount;
     const text = [`🧾 Отчёт по заявке <b>${h(L.reqNumber(id))}</b> · ${h(userName(r.user_id))}`, `<b>${h(r.title)}</b>`,
-      `Потрачено по чекам: <b>${h(fm(r.actual_total))}</b> (согласовано ${h(fm(plan))})`,
+      `Потрачено по чеку: <b>${h(fm(r.actual_total))}</b> (согласовано ${h(fm(plan))})`,
+      r.actual_total > plan + 0.5 ? `⚠️ <b>Превышение на ${h(fm(r.actual_total - plan))}</b> — сотрудник просит согласовать` : '',
+      r.report_comment ? `Комментарий: <i>${h(r.report_comment)}</i>` : '',
+      r.no_breakdown ? 'Отчёт одной суммой, без цен по позициям' : '',
       r.returned_amount ? `Возвращает остаток: ${h(fm(r.returned_amount))}` : ''].filter(Boolean).join('\n') + flagsText(r);
     fire(toHeads(r.user_id, text, [[['✅ Провести', `h:close:r:${id}`], ['↩️ Вернуть отчёт', `h:return:r:${id}`]]], `/r/${id}`));
   },

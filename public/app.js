@@ -621,7 +621,7 @@
           ${comment}
           ${x.purpose ? `<div class="card"><div class="muted small" style="margin-bottom:4px">Назначение</div>${esc(x.purpose).replace(/\n/g, '<br>')}</div>` : ''}
           <div class="card"><div class="card-h"><h3>${reportMode ? 'Отчёт: цены и количество по чеку' : 'Позиции'}</h3>${reportMode ? '<span class="faint small">сохраняется автоматически при отправке</span>' : ''}</div>
-            ${reportMode && x.status !== 'review' && x.files.some((f) => f.kind === 'receipt') ? `<div class="note warn" style="margin-bottom:14px">${ic('info')}<span>Чек прикреплён. Теперь впишите цены из чека ${x.kind === 'money' ? 'по каждой покупке' : 'в колонку «Цена по чеку»'} и нажмите <b>«Отправить отчёт»</b> — без этого руководитель не видит, сколько потрачено.${S.meta.ai ? ' Или нажмите «Распознать ИИ» под чеком.' : ''}</span></div>` : ''}${items}
+            ${reportMode ? receiptBox(x) : reportSummary(x)}${items}
             ${reportMode && x.kind === 'money' ? `<div class="form-grid" style="margin-top:14px"><label class="field"><span>Возвращаю остаток, ${cur()}</span><input class="input" id="ret" inputmode="decimal" value="${esc(x.returned_amount ?? '')}" placeholder="0"></label></div>` : ''}
             ${reportMode ? `<div class="row" style="justify-content:flex-end;margin-top:14px"><button class="btn soft" id="save-report">Сохранить черновик</button><button class="btn" id="send-report">${ic('send', 18)} ${x.status === 'review' ? 'Сохранить исправления' : 'Отправить отчёт'}</button></div>` : ''}
           </div>
@@ -660,6 +660,33 @@
         </div>
       </div>`;
   }
+  // Отчёт по чеку: 1) фото чека 2) сумма по чеку 3) цены по позициям (или одной суммой) + комментарий.
+  function receiptBox(x) {
+    const plan = x.approved_amount ?? x.amount;
+    const hasReceipt = x.files.some((f) => ['receipt', 'invoice'].includes(f.kind));
+    return `<div class="rbox">
+      <div class="rstep ${hasReceipt ? 'done' : ''}"><span class="n">${hasReceipt ? ic('check', 14) : '1'}</span>
+        <div style="flex:1"><b>Фото чека</b><div class="small muted">${hasReceipt ? 'Прикреплено — его видит руководитель' : 'Сфотографируйте чек или приложите PDF/накладную'}</div></div>
+        ${hasReceipt ? '' : `<button type="button" class="btn soft sm" id="r-attach">${ic('camera', 15)} Прикрепить</button>`}</div>
+      <div class="rstep"><span class="n">2</span><div style="flex:1"><b>Сколько потрачено по чеку</b>
+        <div class="row" style="margin-top:8px"><input class="input r-total" id="r-total" inputmode="decimal" value="${esc(x.receipt_total ?? '')}" placeholder="Итог в чеке"><span class="muted small">${cur()} · согласовано ${money(plan)}</span></div>
+        <div id="r-cmp" class="small" style="margin-top:8px"></div></div></div>
+      <div class="rstep"><span class="n">3</span><div style="flex:1"><b>${x.kind === 'money' ? 'Что купили (из чека)' : 'Цены по чеку'}</b><div class="small" id="r-hint" style="margin-top:2px"></div>
+        <div class="row" style="margin-top:8px;gap:12px">${x.kind === 'purchase' ? `<button type="button" class="btn soft sm" id="r-same">${ic('check', 15)} Всё как в заявке</button>` : ''}
+          <label class="row small" style="gap:8px;cursor:pointer"><input type="checkbox" id="r-one" ${x.no_breakdown ? 'checked' : ''}> Одной суммой, без цен по позициям</label></div></div></div>
+      <label class="field"><span>Комментарий для руководителя <span id="r-why-req" class="down"></span></span>
+        <textarea class="input" id="r-comment" rows="2" placeholder="Например: в магазине цена выше, взял другую марку, не было нужного количества">${esc(x.report_comment || '')}</textarea></label>
+    </div>`;
+  }
+  // Итог отчёта для просмотра (руководитель и после отправки).
+  function reportSummary(x) {
+    if (x.receipt_total == null && !x.report_comment) return '';
+    const plan = x.approved_amount ?? x.amount;
+    const over = x.actual_total != null ? Math.round((x.actual_total - plan) * 100) / 100 : 0;
+    return `<div class="note ${over > 0.5 ? 'warn' : ''}" style="margin-bottom:14px">${ic('receipt')}<span>
+      <b>По чеку: ${money(x.receipt_total ?? x.actual_total)}</b> · согласовано ${money(plan)}${over > 0.5 ? ` · <b>превышение ${money(over)}</b> — сотрудник просит согласовать` : over < -0.5 ? ` · экономия ${money(-over)}` : ''}
+      ${x.no_breakdown ? '<br>Отчёт одной суммой, без цен по позициям.' : ''}${x.report_comment ? `<br>Комментарий сотрудника: <i>${esc(x.report_comment)}</i>` : ''}</span></div>`;
+  }
   function moneyRow(i = {}) {
     return `<div class="item-row" style="grid-template-columns:minmax(0,2.4fr) 90px 90px 120px 40px">
       <label class="field f-name"><span>Что купили</span><input class="input" name="name" value="${esc(i.name || '')}" placeholder="Как в чеке"></label>
@@ -694,14 +721,14 @@
     settings_updated: ['Изменены настройки', 'sliders', 'warn'], exported: ['Выгрузка CSV', 'download', ''], bootstrap: ['Система создана', 'sparkles', ''], demo_seeded: ['Загружены демо-данные', 'sparkles', ''],
   };
   const FIELD = { title: 'Название', purpose: 'Назначение', object: 'Объект', category: 'Категория', needed_by: 'Срок', channel: 'Способ', amount: 'Сумма', qty: 'кол-во', unit: 'ед.', price: 'цена',
-    url: 'ссылка', shop: 'магазин', actual_qty: 'кол-во по чеку', actual_price: 'цена по чеку', returned_amount: 'возврат', date: 'Дата', client: 'Клиент', method: 'Оплата', comment: 'Комментарий',
+    url: 'ссылка', shop: 'магазин', actual_qty: 'кол-во по чеку', actual_price: 'цена по чеку', returned_amount: 'возврат', receipt_total: 'сумма по чеку', report_comment: 'комментарий к отчёту', no_breakdown: 'одной суммой', date: 'Дата', client: 'Клиент', method: 'Оплата', comment: 'Комментарий',
     name: 'Имя', position: 'Должность', phone: 'Телефон', role: 'Роль', active: 'Активен', edit_hours: 'Часы на правку', price_alert_pct: 'Порог цены, %', overspend_alert_pct: 'Порог перерасхода, %',
     categories: 'Категории', income_categories: 'Категории доходов', objects: 'Объекты', units: 'Единицы' };
   const fv = (v) => (v == null || v === '' ? '∅' : Array.isArray(v) ? v.join(', ') : String(v).length > 60 ? `${String(v).slice(0, 60)}…` : String(v));
   function evBody(e) {
     const d = e.data || {}; let out = '';
     if (d.changes?.length) out += `<div class="diff">${d.changes.slice(0, 30).map((c) => c.change ? `<span>${esc(c.item)}: <b>${esc(c.change)}</b>${c.price != null ? ` (${nf(c.qty)} × ${money(c.price)})` : ''}</span>`
-      : `<span>${c.item ? `${esc(c.item)} — ` : ''}${esc(FIELD[c.field] || c.field)}: <s>${esc(fv(c.from))}</s> → <ins>${esc(fv(c.to))}</ins></span>`).join('')}</div>`;
+      : `<span>${c.item ? `${esc(c.item)} — ` : ''}${esc(FIELD[c.field] || c.field)}: <s>${esc(c.field === 'no_breakdown' ? (c.from ? 'да' : 'нет') : fv(c.from))}</s> → <ins>${esc(c.field === 'no_breakdown' ? (c.to ? 'да' : 'нет') : fv(c.to))}</ins></span>`).join('')}</div>`;
     if (d.comment) out += `<div class="quote">${esc(d.comment)}</div>`;
     if (d.reason) out += `<div class="quote">${esc(d.reason)}</div>`;
     const bits = [];
@@ -848,10 +875,55 @@
       });
       if ($('#atotal')) $('#atotal').textContent = money(t);
     };
-    $$('[data-aq],[data-ap]').forEach((el) => el.oninput = recalcActual);
+    const num = (v) => { const t = String(v ?? '').replace(/\s/g, '').replace(',', '.'); return t === '' ? null : Number(t); };
+    const itemsSum = () => {
+      if (x.kind === 'money') {
+        const rows = $$('#ritems .item-row').filter((row) => row.querySelector('[name=name]').value.trim());
+        if (!rows.length) return null;
+        let t = 0; for (const row of rows) { const q = num(row.querySelector('[name=qty]').value); const p = num(row.querySelector('[name=price]').value); if (p == null) return null; t += (q || 0) * p; }
+        return Math.round(t * 100) / 100;
+      }
+      let t = 0;
+      for (const i of x.items) { const q = num($(`[data-aq="${i.id}"]`)?.value); const p = num($(`[data-ap="${i.id}"]`)?.value); if (p == null) return null; t += (q ?? i.qty) * p; }
+      return Math.round(t * 100) / 100;
+    };
+    const updateReport = () => {
+      if (!$('#r-total')) return;
+      const plan = x.approved_amount ?? x.amount;
+      const total = num($('#r-total').value); const one = $('#r-one').checked; const sum = itemsSum();
+      const actual = one ? total : (sum ?? total);
+      const cmp = $('#r-cmp'); const hint = $('#r-hint'); const req = $('#r-why-req');
+      if (total == null) cmp.innerHTML = '<span class="muted">Впишите итоговую сумму из чека.</span>';
+      else {
+        const d = Math.round((total - plan) * 100) / 100;
+        cmp.innerHTML = Math.abs(d) <= 0.5 ? `<span class="up">${ic('check', 14)} Совпадает с согласованной суммой</span>`
+          : d > 0 ? `<span class="down">${ic('alert', 14)} Больше согласованного на ${money(d)} (+${nf((d / plan) * 100, 1)}%). Отчёт уйдёт руководителю как запрос на превышение — напишите причину ниже.</span>`
+          : `<span class="up">Меньше согласованного на ${money(-d)} — экономия.</span>`;
+      }
+      if (one) hint.innerHTML = '<span class="muted">Руководитель увидит только общую сумму по чеку. Цены по позициям можно не заполнять.</span>';
+      else if (sum == null) hint.innerHTML = `<span class="muted">${x.kind === 'money' ? 'Перечислите покупки с ценами из чека.' : 'Впишите цену из чека у каждой позиции в таблице ниже.'}</span>`;
+      else if (total == null) hint.innerHTML = `<span class="muted">По позициям выходит ${money(sum)}. </span><button type="button" class="link-btn small" id="r-take">Это итог чека</button>`;
+      else if (Math.abs(sum - total) > Math.max(1, total * 0.005)) hint.innerHTML = `<span class="down">${ic('alert', 14)} По позициям ${money(sum)}, а в чеке ${money(total)} — проверьте цены и количество.</span>`;
+      else hint.innerHTML = `<span class="up">${ic('check', 14)} Сумма по позициям сходится с чеком.</span>`;
+      if ($('#r-take')) $('#r-take').onclick = () => { $('#r-total').value = sum; updateReport(); };
+      req.textContent = actual != null && actual - plan > 0.5 ? '— обязательно, сумма больше согласованной' : '';
+      if (x.kind === 'money' && $('#ret') && x.issued_amount != null && actual != null) $('#ret').placeholder = String(Math.max(0, Math.round((x.issued_amount - actual) * 100) / 100));
+    };
+    $$('[data-aq],[data-ap]').forEach((el) => el.oninput = () => { recalcActual(); updateReport(); });
+    if ($('#r-total')) {
+      $('#r-total').oninput = updateReport; $('#r-one').onchange = updateReport;
+      if ($('#ritems')) $('#ritems').addEventListener('input', updateReport);
+      if ($('#r-same')) $('#r-same').onclick = () => {
+        x.items.forEach((i) => { $(`[data-ap="${i.id}"]`).value = i.price; $(`[data-aq="${i.id}"]`).value = i.qty; });
+        if (!$('#r-total').value) $('#r-total').value = x.approved_amount ?? x.amount;
+        recalcActual(); updateReport();
+      };
+      if ($('#r-attach')) $('#r-attach').onclick = () => { $('#drop')?.scrollIntoView({ behavior: 'smooth', block: 'center' }); $('#file-in')?.click(); };
+      updateReport();
+    }
     if ($('#radd')) {
-      $('#radd').onclick = () => $('#ritems').insertAdjacentHTML('beforeend', moneyRow({}));
-      $('#ritems').onclick = (e) => { const d = e.target.closest('[data-del]'); if (d) d.closest('.item-row').remove(); };
+      $('#radd').onclick = () => { $('#ritems').insertAdjacentHTML('beforeend', moneyRow({})); updateReport(); };
+      $('#ritems').onclick = (e) => { const d = e.target.closest('[data-del]'); if (d) { d.closest('.item-row').remove(); updateReport(); } };
     }
     const reportBody = () => {
       if (x.kind === 'money') {
@@ -859,17 +931,20 @@
           const v = (n) => row.querySelector(`[name=${n}]`).value.trim().replace(/\s/g, n === 'name' || n === 'shop' ? ' ' : '');
           return { name: v('name'), qty: v('qty').replace(',', '.'), unit: v('unit'), price: v('price').replace(',', '.'), actual_price: v('price').replace(',', '.'), actual_qty: v('qty').replace(',', '.'), shop: v('shop') };
         }).filter((i) => i.name);
-        return { part: 'report', items, returned_amount: ($('#ret')?.value || '').replace(',', '.') };
+        return { part: 'report', items, returned_amount: ($('#ret')?.value || '').replace(',', '.'), ...receiptFields() };
       }
-      return { part: 'report', items: x.items.map((i) => ({ id: i.id, actual_qty: $(`[data-aq="${i.id}"]`).value.replace(',', '.'), actual_price: $(`[data-ap="${i.id}"]`).value.replace(/\s/g, '').replace(',', '.') })) };
+      return { part: 'report', items: x.items.map((i) => ({ id: i.id, actual_qty: $(`[data-aq="${i.id}"]`).value.replace(',', '.'), actual_price: $(`[data-ap="${i.id}"]`).value.replace(/\s/g, '').replace(',', '.') })), ...receiptFields() };
     };
+    const receiptFields = () => ($('#r-total') ? { receipt_total: $('#r-total').value.replace(/\s/g, '').replace(',', '.'), no_breakdown: $('#r-one').checked, report_comment: $('#r-comment').value } : {});
     const saveReport = async () => { const res = await put(`/api/requests/${x.id}`, reportBody()); current = res.request; return res; };
     if ($('#save-report')) $('#save-report').onclick = async () => { try { await saveReport(); toast('Черновик сохранён'); render(); } catch (e) { fail(e); } };
     if ($('#send-report')) $('#send-report').onclick = async () => {
       try {
         await saveReport();
         if (x.status === 'review') { toast('Исправления сохранены'); return render(); }
-        if (!(await confirmBox('Отправить отчёт?', 'Руководитель проверит цены и чек и проведёт заявку. После отправки у вас будет время на исправление ошибок.', 'Отправить'))) return render();
+        const cur2 = current; const plan = cur2.approved_amount ?? cur2.amount; const tot = cur2.actual_total ?? cur2.receipt_total;
+        const over = tot != null ? tot - plan : 0;
+        if (!(await confirmBox('Отправить отчёт?', `По чеку <b>${money(tot)}</b>, согласовано ${money(plan)}.${over > 0.5 ? ` Превышение <b>${money(over)}</b> руководитель согласует при проведении.` : ''} После отправки у вас будет время на исправление ошибок.`, 'Отправить'))) return render();
         await post(`/api/requests/${x.id}/action`, { action: 'submit_report' }); toast('Отчёт отправлен'); render();
       } catch (e) { fail(e); }
     };
@@ -981,8 +1056,11 @@
           <td class="r"><input class="input" style="height:36px;width:80px;text-align:right" data-aq="${i.id}" inputmode="decimal" value="${esc(i.actual_qty ?? i.qty)}"></td>
           <td class="r"><input class="input" style="height:36px;width:110px;text-align:right" data-ap="${i.id}" inputmode="decimal" value="${esc(i.actual_price ?? '')}" placeholder="${esc(i.price)}"></td></tr>`).join('')}</tbody></table>`;
     modal(`<h2>Провести по чеку</h2><p class="muted" style="margin:0">Перепишите суммы из чека. Заявка будет проведена, расход попадёт в аналитику.</p>
-      ${preview}<form class="stack" id="acc" novalidate>${body}
-      <div class="row between"><span class="muted">Итого по чеку</span><b class="num" id="acc-total">—</b></div>
+      ${preview}<form class="stack" id="acc" novalidate>
+      <div class="row"><label class="field" style="flex:0 1 220px"><span>Итог в чеке, ${cur()}</span><input class="input" name="receipt_total" inputmode="decimal" value="${esc(x.receipt_total ?? '')}" placeholder="${esc(x.approved_amount ?? x.amount)}"></label>
+        <label class="row small" style="gap:8px;margin-top:20px;cursor:pointer"><input type="checkbox" name="one" ${x.no_breakdown ? 'checked' : ''}> Одной суммой, без цен по позициям</label></div>
+      ${body}
+      <div class="row between"><span class="muted">По позициям</span><b class="num" id="acc-total">—</b></div>
       <div class="acts"><button type="button" class="btn soft" data-close>Отмена</button><button class="btn">${ic('check', 16)} Провести</button></div></form>`, {
       wide: true,
       onOpen: (box, close) => {
@@ -1010,6 +1088,8 @@
           } else {
             payload = { items: x.items.map((i) => ({ id: i.id, actual_qty: $(`[data-aq="${i.id}"]`, box).value.replace(',', '.'), actual_price: $(`[data-ap="${i.id}"]`, box).value.replace(/\s/g, '').replace(',', '.') })) };
           }
+          payload.receipt_total = f.receipt_total.value.replace(/\s/g, '').replace(',', '.');
+          payload.no_breakdown = f.one.checked;
           try { await post(`/api/requests/${x.id}/action`, { action: 'accept', ...payload }); close(); toast('Проведено'); render(); } catch (err) { fail(err); }
         };
       },

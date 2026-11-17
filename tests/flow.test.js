@@ -88,6 +88,15 @@ test('полный цикл заявки и защита', async () => {
   const f = await eng('POST', '/api/files', { request_id: id, kind: 'receipt', name: 'чек.png', data: PNG });
   assert.equal(f.status, 200);
   assert.equal((await other('GET', `/api/files/${f.data.id}`)).status, 404);
+  // сумма по чеку не совпадает с позициями — не принимается
+  await eng('PUT', `/api/requests/${id}`, { part: 'report', receipt_total: 350 });
+  const mism = await eng('POST', `/api/requests/${id}/action`, { action: 'submit_report' });
+  assert.equal(mism.status, 400); assert.match(mism.data.error, /не совпадает/);
+  // чек 330 больше согласованных 300 — без объяснения нельзя (это запрос на превышение)
+  await eng('PUT', `/api/requests/${id}`, { part: 'report', receipt_total: 330 });
+  const over = await eng('POST', `/api/requests/${id}/action`, { action: 'submit_report' });
+  assert.equal(over.status, 400); assert.match(over.data.error, /больше согласованных/);
+  await eng('PUT', `/api/requests/${id}`, { part: 'report', report_comment: 'Подорожала труба' });
   assert.equal((await eng('POST', `/api/requests/${id}/action`, { action: 'submit_report' })).status, 200);
 
   // окно правки отчёта истекло → правка запрещена, только через корректировку
@@ -194,6 +203,18 @@ test('полный цикл заявки и защита', async () => {
   const acc = await head('POST', `/api/requests/${id3}/action`, { action: 'accept', items: [{ id: it3.id, actual_qty: 10, actual_price: 42 }] });
   assert.equal(acc.data.request.status, 'closed');
   assert.equal(acc.data.request.actual_total, 420);
+
+  // отчёт «одной суммой»: только сумма по чеку, без цен по позициям; проверка это отмечает
+  const id4 = (await eng('POST', '/api/requests', { kind: 'purchase', title: 'Мелочи', channel: 'offline', items: [{ name: 'Хомуты', qty: 1, price: 50 }, { name: 'Изолента', qty: 2, price: 30 }] })).data.id;
+  await head('POST', `/api/requests/${id4}/action`, { action: 'approve' });
+  await eng('POST', '/api/files', { request_id: id4, kind: 'receipt', name: 'м.png', data: PNG });
+  assert.equal((await eng('POST', `/api/requests/${id4}/action`, { action: 'submit_report' })).status, 400, 'нет ни цен, ни суммы');
+  const one = await eng('PUT', `/api/requests/${id4}`, { part: 'report', receipt_total: 105, no_breakdown: true });
+  assert.equal(one.data.request.actual_total, 105);
+  assert.equal((await eng('POST', `/api/requests/${id4}/action`, { action: 'submit_report' })).status, 200);
+  const d4 = (await head('GET', `/api/requests/${id4}`)).data;
+  assert.equal(d4.receipt_total, 105);
+  assert.ok(d4.flags.some((x) => x.code === 'no_breakdown'));
 
   // начальный остаток кассы: заявка → подтверждение (единственный руководитель может подтвердить свой)
   const before = (await head('GET', '/api/head/cash')).data.balance;

@@ -228,6 +228,9 @@ addColumn('users', 'tg_chat_id', 'tg_chat_id TEXT');
 addColumn('users', 'tg_username', 'tg_username TEXT');
 addColumn('users', 'tg_link_code', 'tg_link_code TEXT');
 addColumn('users', 'tg_link_expires', 'tg_link_expires INTEGER');
+addColumn('requests', 'receipt_total', 'receipt_total REAL');
+addColumn('requests', 'report_comment', "report_comment TEXT NOT NULL DEFAULT ''");
+addColumn('requests', 'no_breakdown', 'no_breakdown INTEGER NOT NULL DEFAULT 0');
 addColumn('requests', 'issued_from_cash', 'issued_from_cash INTEGER NOT NULL DEFAULT 0');
 
 const DEFAULT_SETTINGS = {
