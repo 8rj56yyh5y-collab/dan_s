@@ -254,43 +254,88 @@ function updateRequest(user, id, body) {
 // «Потрачено по чекам» считается, только когда цены по чеку указаны у всех позиций.
 function writeReport(user, r, body, before, action) {
   const now = Date.now();
-  {
-    let items;
-    if (r.kind === 'money') {
-      // По подотчёту сотрудник сам перечисляет, что купил; цена по чеку = фактическая.
-      items = parseItems(body.items, { kind: 'money', report: true }).map((i) => ({
-        ...i, price: i.actual_price ?? i.price, actual_price: i.actual_price ?? i.price,
-      }));
-    } else {
-      const incoming = new Map((Array.isArray(body.items) ? body.items : []).map((i) => [Number(i.id), i]));
-      items = before.map((i) => {
-        const inc = incoming.get(i.id);
-        if (!inc) return i;
-        const aq = inc.actual_qty === '' || inc.actual_qty == null ? null : money(inc.actual_qty, { max: 1e7 });
-        const ap = inc.actual_price === '' || inc.actual_price == null ? null : money(inc.actual_price, { max: 1e8 });
-        if (inc.actual_qty != null && inc.actual_qty !== '' && aq == null) throw new HttpError(400, `Проверьте количество у «${i.name}»`);
-        if (inc.actual_price != null && inc.actual_price !== '' && ap == null) throw new HttpError(400, `Проверьте цену у «${i.name}»`);
-        return { ...i, actual_qty: aq, actual_price: ap };
-      });
-    }
-    let returned = r.returned_amount;
-    if (body.returned_amount !== undefined) {
-      returned = body.returned_amount === '' ? null : money(body.returned_amount);
-      if (body.returned_amount !== '' && returned == null) throw new HttpError(400, 'Проверьте сумму возврата');
-    }
-    const changes = [
-      ...diffItems(before, items, ['actual_qty', 'actual_price', ...(r.kind === 'money' ? ['qty', 'price'] : [])]),
-      ...diffFields(r, { returned_amount: returned }, ['returned_amount']),
-    ];
-    if (!changes.length) return { changed: false };
-    writeItems(r.id, items);
-    const saved = itemsOf(r.id);
-    const complete = saved.length > 0 && saved.every((i) => i.actual_price != null);
-    const total = complete ? actualTotal(saved) : null;
-    db.prepare('UPDATE requests SET actual_total = ?, returned_amount = ?, updated_at = ? WHERE id = ?').run(total, returned, now, r.id);
-    logEvent(user.id, 'request', r.id, action, { changes, actual_total: total });
-    return { changed: true };
+  let items;
+  if (r.kind === 'money') {
+    // По подотчёту сотрудник сам перечисляет, что купил; цена по чеку = фактическая.
+    items = body.items === undefined ? before : parseItems(body.items, { kind: 'money', report: true }).map((i) => ({
+      ...i, price: i.actual_price ?? i.price, actual_price: i.actual_price ?? i.price,
+    }));
+  } else {
+    const incoming = new Map((Array.isArray(body.items) ? body.items : []).map((i) => [Number(i.id), i]));
+    items = before.map((i) => {
+      const inc = incoming.get(i.id);
+      if (!inc) return i;
+      const aq = inc.actual_qty === '' || inc.actual_qty == null ? null : money(inc.actual_qty, { max: 1e7 });
+      const ap = inc.actual_price === '' || inc.actual_price == null ? null : money(inc.actual_price, { max: 1e8 });
+      if (inc.actual_qty != null && inc.actual_qty !== '' && aq == null) throw new HttpError(400, `Проверьте количество у «${i.name}»`);
+      if (inc.actual_price != null && inc.actual_price !== '' && ap == null) throw new HttpError(400, `Проверьте цену у «${i.name}»`);
+      return { ...i, actual_qty: aq, actual_price: ap };
+    });
   }
+  let returned = r.returned_amount;
+  if (body.returned_amount !== undefined) {
+    returned = body.returned_amount === '' ? null : money(body.returned_amount);
+    if (body.returned_amount !== '' && returned == null) throw new HttpError(400, 'Проверьте сумму возврата');
+  }
+  let receiptTotal = r.receipt_total;
+  if (body.receipt_total !== undefined) {
+    receiptTotal = body.receipt_total === '' || body.receipt_total == null ? null : money(body.receipt_total, { allowZero: false });
+    if (body.receipt_total !== '' && body.receipt_total != null && receiptTotal == null) throw new HttpError(400, 'Проверьте сумму по чеку');
+  }
+  const noBreakdown = body.no_breakdown === undefined ? (r.no_breakdown ? 1 : 0) : (body.no_breakdown ? 1 : 0);
+  const reportComment = body.report_comment === undefined ? (r.report_comment || '') : str(body.report_comment, 1000);
+  const changes = [
+    ...diffItems(before, items, ['actual_qty', 'actual_price', ...(r.kind === 'money' ? ['qty', 'price'] : [])]),
+    ...diffFields(r, { returned_amount: returned, receipt_total: receiptTotal, report_comment: reportComment, no_breakdown: noBreakdown },
+      ['returned_amount', 'receipt_total', 'report_comment', 'no_breakdown']),
+  ];
+  if (!changes.length) return { changed: false };
+  writeItems(r.id, items);
+  const total = reportActual(itemsOf(r.id), receiptTotal, noBreakdown);
+  db.prepare('UPDATE requests SET actual_total = ?, returned_amount = ?, receipt_total = ?, report_comment = ?, no_breakdown = ?, updated_at = ? WHERE id = ?')
+    .run(total, returned, receiptTotal, reportComment, noBreakdown, now, r.id);
+  logEvent(user.id, 'request', r.id, action, { changes, actual_total: total, receipt_total: receiptTotal });
+  return { changed: true };
+}
+
+// Фактическая трата: сумма по позициям, а если отчёт «одной суммой» — сумма по чеку. Пока не заполнено — null (а не 0).
+function reportActual(items, receiptTotal, noBreakdown) {
+  if (noBreakdown && receiptTotal) return receiptTotal;
+  const complete = items.length > 0 && items.every((i) => i.actual_price != null);
+  return complete ? actualTotal(items) : null;
+}
+
+// Проверка отчёта перед отправкой/проведением. Возвращает итоговые суммы.
+function checkReport(r, { byHead = false } = {}) {
+  const items = itemsOf(r.id);
+  const receipts = db.prepare("SELECT COUNT(*) n FROM files WHERE request_id = ? AND kind IN ('receipt','invoice')").get(r.id).n;
+  if (!receipts) throw new HttpError(400, 'Без чека или накладной отчёт не принимается. Прикрепите фото или PDF.');
+  const complete = items.length > 0 && items.every((i) => i.actual_price != null);
+  const sum = complete ? actualTotal(items) : null;
+  let receiptTotal = r.receipt_total;
+  if (receiptTotal == null) {
+    if (complete && !r.no_breakdown) receiptTotal = sum;
+    else throw new HttpError(400, 'Укажите сумму по чеку');
+  }
+  let actual;
+  if (r.no_breakdown) {
+    actual = receiptTotal;
+  } else {
+    if (!items.length) throw new HttpError(400, 'Перечислите покупки по чеку или отметьте «Одной суммой»');
+    const missing = items.find((i) => i.actual_price == null);
+    if (missing) throw new HttpError(400, `Укажите цену по чеку для «${missing.name}» или отметьте «Одной суммой»`);
+    if (Math.abs(sum - receiptTotal) > Math.max(1, receiptTotal * 0.005)) {
+      throw new HttpError(400, `Сумма по позициям ${fm(sum)} не совпадает с суммой по чеку ${fm(receiptTotal)}. Проверьте цены и количество.`);
+    }
+    actual = sum;
+  }
+  const base = r.approved_amount ?? r.amount;
+  const over = round2(actual - base);
+  // Чек больше согласованного — это запрос на превышение: сотрудник обязан объяснить.
+  if (!byHead && over > 0.5 && !r.report_comment) {
+    throw new HttpError(400, `По чеку ${fm(actual)} — это больше согласованных ${fm(base)} на ${fm(over)}. Напишите, почему: руководитель увидит превышение и решит при проведении.`);
+  }
+  return { actual: round2(actual), receiptTotal: round2(receiptTotal), receipts, over: over > 0.5 ? over : 0 };
 }
 
 function staffAction(user, id, action, body = {}) {
@@ -312,16 +357,10 @@ function staffAction(user, id, action, body = {}) {
     }
     if (action === 'submit_report') {
       if (!['approved', 'issued', 'report_revision'].includes(r.status)) throw new HttpError(409, 'Отчёт сейчас отправить нельзя');
-      const items = itemsOf(r.id);
-      if (!items.length) throw new HttpError(400, 'Добавьте купленные позиции с ценами из чека');
-      const missing = items.find((i) => i.actual_price == null);
-      if (missing) throw new HttpError(400, `Укажите цену по чеку для «${missing.name}»`);
-      const receipts = db.prepare("SELECT COUNT(*) n FROM files WHERE request_id = ? AND kind IN ('receipt','invoice')").get(r.id).n;
-      if (!receipts) throw new HttpError(400, 'Без чека или накладной отчёт не принимается. Прикрепите фото или PDF.');
-      const total = actualTotal(items);
-      db.prepare("UPDATE requests SET status='review', actual_total=?, reported_at=?, edit_until=?, updated_at=? WHERE id=?")
-        .run(total, now, now + editMs(), now, r.id);
-      logEvent(user.id, 'request', r.id, 'report_submitted', { actual_total: total, receipts });
+      const c = checkReport(r);
+      db.prepare("UPDATE requests SET status='review', actual_total=?, receipt_total=?, reported_at=?, edit_until=?, updated_at=? WHERE id=?")
+        .run(c.actual, c.receiptTotal, now, now + editMs(), now, r.id);
+      logEvent(user.id, 'request', r.id, 'report_submitted', { actual_total: c.actual, receipts: c.receipts, over: c.over || null, comment: r.report_comment || '', no_breakdown: !!r.no_breakdown });
       return;
     }
     throw new HttpError(400, 'Неизвестное действие');
@@ -378,11 +417,12 @@ function headAction(user, id, action, body = {}) {
         if (!['approved', 'issued', 'report_revision', 'review'].includes(r.status)) throw new HttpError(409, 'Провести по чеку сейчас нельзя');
         const receipts = db.prepare("SELECT COUNT(*) n FROM files WHERE request_id = ? AND kind IN ('receipt','invoice')").get(r.id).n;
         if (!receipts) throw new HttpError(400, 'Нет чека — провести нельзя. Попросите сотрудника приложить чек.');
-        writeReport(user, r, body, itemsOf(r.id), 'report_by_head');
+        writeReport(user, r, { ...body, report_comment: undefined }, itemsOf(r.id), 'report_by_head');
         const fresh = loadRequest(r.id);
-        if (fresh.actual_total == null) throw new HttpError(400, 'Укажите цену по чеку для каждой позиции');
-        db.prepare("UPDATE requests SET status='closed', reported_at=COALESCE(reported_at, ?), closed_at=?, closed_by=?, head_comment=CASE WHEN ?<>'' THEN ? ELSE head_comment END, updated_at=? WHERE id=?")
-          .run(now, now, user.id, comment, comment, now, r.id);
+        const c = checkReport(fresh, { byHead: true });
+        fresh.actual_total = c.actual;
+        db.prepare("UPDATE requests SET status='closed', actual_total=?, receipt_total=?, reported_at=COALESCE(reported_at, ?), closed_at=?, closed_by=?, head_comment=CASE WHEN ?<>'' THEN ? ELSE head_comment END, updated_at=? WHERE id=?")
+          .run(c.actual, c.receiptTotal, now, now, user.id, comment, comment, now, r.id);
         if (fresh.issued_from_cash && fresh.returned_amount > 0) {
           cashInsert({ direction: 'in', kind: 'return', amount: fresh.returned_amount, request_id: r.id, object: r.object, comment: `Возврат остатка: ${r.title}`.slice(0, 300), user_id: user.id });
         }
@@ -700,6 +740,7 @@ function flagsForRequest(r, items, files, settings = getSettings()) {
   }
   const del = deliveryTotal(r.id);
   if (del && r.actual_total > 0 && del > r.actual_total * 0.25) flags.push({ level: 'low', code: 'delivery_high', text: `Доставка ${fm(del)} — ${Math.round((del / r.actual_total) * 100)}% от стоимости товара` });
+  if (r.no_breakdown && ['review', 'closed'].includes(r.status)) flags.push({ level: 'mid', code: 'no_breakdown', text: 'Отчёт одной суммой, без цен по позициям — контроль цен по этой заявке не работает' });
   if (r.changed_after_approval) flags.push({ level: 'mid', code: 'changed_after_approval', text: 'Заявку меняли после согласования (см. историю)' });
   if (r.status === 'issued') {
     const issuedEv = db.prepare("SELECT ts FROM events WHERE entity='request' AND entity_id=? AND action='issued' ORDER BY id DESC LIMIT 1").get(r.id);

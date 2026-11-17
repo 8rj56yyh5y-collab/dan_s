@@ -407,3 +407,15 @@ textarea.input { min-height: 84px; }
 @media (max-width: 860px) { .hide-d { display: inline; } }
 @media (max-width: 860px) { .shell { background: none; } }
 .theme-switch { align-items: center; align-self: start; }
+
+/* отчёт по чеку */
+.rbox { display: grid; gap: 14px; padding: 16px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface-2); margin-bottom: 16px; }
+.rstep { display: flex; gap: 12px; align-items: flex-start; }
+.rstep .n { width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; background: var(--surface); border: 1px solid var(--line-strong); font-size: .8rem; font-weight: 700; flex: none; }
+.rstep.done .n { background: var(--ok-soft); color: var(--ok); border-color: transparent; }
+.rstep .n .i { display: block; }
+.r-total { max-width: 200px; height: 46px; font-size: 1.15rem; font-weight: 650; background: var(--surface); }
+.rbox textarea.input { min-height: 60px; background: var(--surface); }
+.detail .t td:first-child { min-width: 150px; }
+.detail .t th, .detail .t td { padding-left: 10px; padding-right: 10px; }
+@media (max-width: 860px) { .rstep { flex-wrap: wrap; } .rstep > .btn { margin-left: 38px; } .r-total { max-width: 100%; } }
