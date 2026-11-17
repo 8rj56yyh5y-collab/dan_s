@@ -17,7 +17,10 @@ const KINDS = {
 };
 const MANUAL = ['topup', 'expense', 'withdraw', 'recount'];
 
-const needHead = (user) => { if (user.role !== 'head') throw new HttpError(403, 'Касса — только для руководителя'); };
+const needHead = (user) => { if (user.role !== 'head') throw new HttpError(403, 'Только для руководителя'); };
+// Кассу ведёт руководитель или сотрудник с отметкой «Кассир». Видят её оба.
+const canCash = (user) => user.role === 'head' || !!user.cashier;
+const needCash = (user) => { if (!canCash(user)) throw new HttpError(403, 'Касса доступна руководителю и кассиру'); };
 
 function opDate(body) {
   const d = str(body.date, 10);
@@ -32,7 +35,7 @@ function opDate(body) {
 }
 
 function createOp(user, body) {
-  needHead(user);
+  needCash(user);
   const kind = String(body.kind || '');
   if (!MANUAL.includes(kind)) throw new HttpError(400, 'Неизвестная операция');
   const settings = getSettings();
@@ -114,8 +117,10 @@ function report(q = {}) {
     totals.by_kind[o.kind] = round2((totals.by_kind[o.kind] || 0) + (o.direction === 'in' ? o.amount : -o.amount));
   }
   const underReport = db.prepare("SELECT COALESCE(SUM(issued_amount),0) s, COUNT(*) n FROM requests WHERE issued_from_cash = 1 AND status IN ('issued','review','report_revision')").get();
+  const pend = db.prepare("SELECT COALESCE(SUM(amount),0) s, COUNT(*) n FROM openings WHERE status = 'pending' AND target = 'cash'").get();
   return {
-    range: r, opening, closing, balance: L.cashBalance(),
+    range: r, opening, closing, balance: L.cashBalance(), pending_openings: { s: round2(pend.s), n: pend.n },
+    cashiers: db.prepare("SELECT name FROM users WHERE cashier = 1 AND active = 1 ORDER BY name").all().map((x) => x.name),
     totals: { in: round2(totals.in), out: round2(totals.out), by_kind: totals.by_kind },
     under_report: { s: round2(underReport.s), n: underReport.n },
     items: rows.reverse().map((o) => ({
@@ -138,7 +143,7 @@ function csvRows(q) {
 }
 
 // ---------- начальный остаток (по согласованию) ----------
-const TARGETS = { cash: 'Наличные в кассе БХ', advance: 'Деньги на руках (под отчёт)' };
+const TARGETS = { cash: 'В кассу БХ', advance: 'Мои деньги под отчёт' };
 
 function createOpening(user, body) {
   const target = TARGETS[body.target] ? body.target : null;
@@ -156,9 +161,14 @@ function createOpening(user, body) {
   return id;
 }
 
-function decideOpening(user, id, approve, comment) {
+function decideOpening(user, id, approve, comment, target) {
   needHead(user);
   const o = db.prepare('SELECT * FROM openings WHERE id = ?').get(Number(id));
+  if (o && approve && TARGETS[target] && target !== o.target && o.status === 'pending') {
+    db.prepare('UPDATE openings SET target = ? WHERE id = ?').run(target, o.id);
+    logEvent(user.id, 'opening', o.id, 'opening_retargeted', { from: TARGETS[o.target], to: TARGETS[target] });
+    o.target = target;
+  }
   if (!o) throw new HttpError(404, 'Заявка на остаток не найдена');
   if (o.status !== 'pending') throw new HttpError(409, 'Уже рассмотрено');
   // Свой остаток руководитель подтверждает сам, только если других руководителей нет.
@@ -189,12 +199,33 @@ function decideOpening(user, id, approve, comment) {
   });
 }
 
+// Остаток подтвердили как «деньги на руках», а это были наличные кассы: переносим в кассу.
+// Можно, пока по подотчёту не было ни отчёта, ни чеков.
+function moveOpeningToCash(user, id) {
+  needHead(user);
+  const o = db.prepare('SELECT * FROM openings WHERE id = ?').get(Number(id));
+  if (!o || o.status !== 'approved' || o.target !== 'advance' || !o.request_id) throw new HttpError(409, 'Перенести в кассу можно только подтверждённый остаток «под отчёт»');
+  const r = L.loadRequest(o.request_id);
+  const used = db.prepare("SELECT COUNT(*) n FROM files WHERE request_id = ? AND kind != 'removed'").get(r.id).n + L.itemsOf(r.id).length;
+  if (r.status !== 'issued' || used) throw new HttpError(409, 'По этому остатку уже отчитывались — перенести нельзя');
+  const author = db.prepare('SELECT name FROM users WHERE id = ?').get(o.user_id);
+  return tx(() => {
+    db.prepare("UPDATE requests SET status = 'cancelled', updated_at = ? WHERE id = ?").run(Date.now(), r.id);
+    logEvent(user.id, 'request', r.id, 'cancelled', { comment: 'Начальный остаток перенесён в кассу' });
+    const cashOpId = L.cashInsert({ direction: 'in', kind: 'topup', amount: o.amount, comment: `Начальный остаток (внёс ${author.name}): ${o.comment}`.slice(0, 300), user_id: user.id });
+    db.prepare("UPDATE openings SET target = 'cash', cash_op_id = ?, request_id = NULL WHERE id = ?").run(cashOpId, o.id);
+    logEvent(user.id, 'opening', o.id, 'opening_moved_to_cash', { amount: o.amount, author: author.name });
+    return { cash_op_id: cashOpId };
+  });
+}
+
 function listOpenings(user) {
-  const where = user.role === 'head' ? "o.status = 'pending' OR o.created_at > ?" : 'o.user_id = ?';
-  const arg = user.role === 'head' ? Date.now() - 30 * 864e5 : user.id;
+  const all = canCash(user);
+  const where = all ? "o.status = 'pending' OR o.created_at > ? OR o.user_id = ?" : 'o.user_id = ? OR ? = 0';
+  const args = all ? [Date.now() - 30 * 864e5, user.id] : [user.id, 1];
   return db.prepare(`SELECT o.*, u.name user_name, d.name decided_name FROM openings o JOIN users u ON u.id = o.user_id LEFT JOIN users d ON d.id = o.decided_by
-    WHERE ${where} ORDER BY o.status = 'pending' DESC, o.id DESC LIMIT 50`).all(arg)
+    WHERE ${where} ORDER BY o.status = 'pending' DESC, o.id DESC LIMIT 50`).all(...args)
     .map((o) => ({ ...o, target_text: TARGETS[o.target] }));
 }
 
-module.exports = { KINDS, MANUAL, TARGETS, createOp, removeOp, report, csvRows, createOpening, decideOpening, listOpenings };
+module.exports = { KINDS, MANUAL, TARGETS, canCash, moveOpeningToCash, createOp, removeOp, report, csvRows, createOpening, decideOpening, listOpenings };

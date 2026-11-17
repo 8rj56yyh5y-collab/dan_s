@@ -505,7 +505,7 @@ function storeFile(user, owner, k, name, data) {
 function fileFor(user, id) {
   const f = db.prepare('SELECT * FROM files WHERE id = ?').get(Number(id));
   if (!f) throw new HttpError(404, 'Файл не найден');
-  if (f.cash_op_id) { if (user.role !== 'head') throw new HttpError(404, 'Файл не найден'); return f; }
+  if (f.cash_op_id) { if (user.role !== 'head' && !user.cashier) throw new HttpError(404, 'Файл не найден'); return f; }
   const ownerId = f.request_id ? loadRequest(f.request_id).user_id : loadIncome(f.income_id).user_id;
   if (!canSee(user, ownerId)) throw new HttpError(404, 'Файл не найден');
   return f;

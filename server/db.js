@@ -224,6 +224,7 @@ function addColumn(table, column, ddl) {
   if (!cols.includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
 }
 addColumn('files', 'cash_op_id', 'cash_op_id INTEGER REFERENCES cash_ops(id)');
+addColumn('users', 'cashier', 'cashier INTEGER NOT NULL DEFAULT 0');
 addColumn('users', 'tg_chat_id', 'tg_chat_id TEXT');
 addColumn('users', 'tg_username', 'tg_username TEXT');
 addColumn('users', 'tg_link_code', 'tg_link_code TEXT');

@@ -67,7 +67,7 @@ function destroyUserSessions(userId, exceptToken) {
   else db.prepare('DELETE FROM sessions WHERE user_id = ?').run(userId);
 }
 
-const USER_FIELDS = 'u.id, u.login, u.name, u.position, u.phone, u.role, u.must_change_pw, u.active, u.created_at, u.last_login';
+const USER_FIELDS = 'u.id, u.login, u.name, u.position, u.phone, u.role, u.cashier, u.must_change_pw, u.active, u.created_at, u.last_login';
 
 function userFromRequest(req) {
   const token = parseCookies(req.headers.cookie)[COOKIE];

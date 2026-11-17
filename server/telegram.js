@@ -158,6 +158,15 @@ const notify = {
       ? `✅ Начальный остаток ${h(fm(o.amount))} подтверждён.${o.target === 'advance' ? ' Он числится за вами под отчётом — отчитайтесь чеками по заявке «Начальный остаток на руках».' : ''}`
       : `❌ Начальный остаток ${h(fm(o.amount))} не подтверждён.${o.decision_comment ? `\n<i>${h(o.decision_comment)}</i>` : ''}`, [], o.request_id ? `/r/${o.request_id}` : '/'));
   },
+  cashOp(opId, actorId, kind, diff) {
+    const u = db.prepare('SELECT role, name FROM users WHERE id = ?').get(actorId);
+    const bal = L.cashBalance();
+    if (kind === 'recount' && !opId) { if (u.role !== 'head') fire(toHeads(actorId, `🧮 Пересчёт кассы сошёлся · ${h(u.name)}\nВ кассе: <b>${h(fm(bal))}</b>`, [], '/cash')); return; }
+    const o = opId && db.prepare('SELECT * FROM cash_ops WHERE id = ?').get(opId);
+    if (!o || u.role === 'head') return;
+    const titles = { topup: '➕ Пополнение кассы', expense: '➖ Расход из кассы', withdraw: '📤 Сдано из кассы', recount: diff > 0 ? '🧮 Пересчёт: излишек' : '⚠️ Пересчёт: недостача' };
+    fire(toHeads(actorId, `${titles[kind] || 'Касса'} · ${h(u.name)}\n<b>${o.direction === 'in' ? '+' : '−'}${h(fm(o.amount))}</b>${o.category ? ` · ${h(o.category)}` : ''}${o.comment ? `\n<i>${h(o.comment)}</i>` : ''}\nВ кассе теперь: <b>${h(fm(bal))}</b>`, [], '/cash'));
+  },
   deliveryAdded(rid, actorId, amount) {
     const r = L.loadRequest(rid);
     if (r.status !== 'closed') return;
