@@ -105,12 +105,12 @@
 
   // ================= Каркас =================
   const NAV_HEAD = [
-    ['/', 'home', 'Обзор'], ['/requests', 'list', 'Заявки', 'todo'], ['/incomes', 'coins', 'Доходы', 'inc'], ['/cash', 'wallet', 'Касса', 'cash'],
+    ['/', 'home', 'Обзор'], ['/money', 'money', 'Операции'], ['/requests', 'list', 'Заявки', 'todo'], ['/incomes', 'coins', 'Доходы', 'inc'], ['/cash', 'wallet', 'Касса', 'cash'],
     ['/analytics', 'chart', 'Аналитика'], ['/control', 'shield', 'Контроль', 'flags'], ['/journal', 'history', 'Журнал'],
     ['sep'], ['/team', 'users', 'Команда'], ['/settings', 'sliders', 'Настройки'],
   ];
   const NAV_STAFF = [['/', 'home', 'Главная'], ['/requests', 'list', 'Мои заявки', 'todo'], ['/incomes', 'coins', 'Доходы'], ['sep'], ['/profile', 'user', 'Профиль']];
-  const TAB_HEAD = [['/', 'home', 'Обзор'], ['/requests', 'list', 'Заявки', 'todo'], ['/analytics', 'chart', 'Аналитика'], ['/control', 'shield', 'Контроль', 'flags'], ['/more', 'menu', 'Ещё']];
+  const TAB_HEAD = [['/', 'home', 'Обзор'], ['/money', 'money', 'Операции'], ['/requests', 'list', 'Заявки', 'todo'], ['/cash', 'wallet', 'Касса', 'cash'], ['/more', 'menu', 'Ещё']];
   const TAB_STAFF = [['/', 'home', 'Главная'], ['/requests', 'list', 'Заявки', 'todo'], ['/new', 'plus', 'Заявка', null, true], ['/incomes', 'coins', 'Доходы'], ['/profile', 'user', 'Профиль']];
   const NAV_CASHIER = [['/', 'home', 'Главная'], ['/requests', 'list', 'Мои заявки', 'todo'], ['/cash', 'wallet', 'Касса', 'cash'], ['/incomes', 'coins', 'Доходы'], ['sep'], ['/profile', 'user', 'Профиль']];
   const TAB_CASHIER = [['/', 'home', 'Главная'], ['/requests', 'list', 'Заявки', 'todo'], ['/new', 'plus', 'Заявка', null, true], ['/cash', 'wallet', 'Касса', 'cash'], ['/incomes', 'coins', 'Доходы']];
@@ -179,11 +179,11 @@
       '': isHead() ? pageHeadHome : pageStaffHome,
       requests: pageRequests, new: pageNew, r: pageRequest, edit: pageEditRequest,
       incomes: pageIncomes, income: pageIncome, 'new-income': pageNewIncome,
-      analytics: pageAnalytics, control: pageControl, cash: pageCash, journal: pageJournal, team: pageTeam, settings: pageSettings,
+      analytics: pageAnalytics, control: pageControl, cash: pageCash, money: pageMoney, journal: pageJournal, team: pageTeam, settings: pageSettings,
       profile: pageProfile, more: pageMore,
     };
     const page = pages[r.parts[0] || ''] || pageNotFound;
-    const headOnly = ['analytics', 'control', 'journal', 'team', 'settings', 'more'];
+    const headOnly = ['analytics', 'control', 'journal', 'team', 'settings', 'more', 'money'];
     if ((headOnly.includes(r.parts[0]) && !isHead()) || (r.parts[0] === 'cash' && !canCash())) { root.innerHTML = shell(noAccess()); return; }
     root.innerHTML = shell('<div class="sk" style="height:110px;margin-bottom:16px"></div><div class="sk" style="height:360px"></div>');
     window.scrollTo(0, 0);
@@ -408,6 +408,8 @@
           <dt>На согласовании</dt><dd>${money(o.pipeline.filter((x) => ['pending', 'revision'].includes(x.status)).reduce((s, x) => s + x.s, 0))}</dd>
           <dt>Среднее время согласования</dt><dd>${o.approval_hours != null ? `${nf(o.approval_hours, 1)} ч` : '—'}</dd></div>
         </div>
+        <div class="card flush" style="grid-column:1/-1"><div class="card-h" style="padding:16px 20px 4px"><h3>Последние операции</h3><a class="link small" href="#/money">Вся история</a></div>
+          ${h.recent_ops.length ? `<div class="list">${h.recent_ops.map(opRow).join('')}</div>` : '<div class="empty small">Операций пока нет</div>'}</div>
       </div>`;
   }
   pageHeadHome.after = () => {
@@ -1452,6 +1454,55 @@
     });
   }
 
+  // ================= Операции: история движения денег =================
+  const OP_IC = { income: 'coins', expense: 'receipt', cash: 'wallet' };
+  function opRow(x) {
+    const meta = [esc(x.kind_text), x.source ? `<a class="link" href="#${x.link}">${esc(x.source)}</a>` : '', esc(x.user_name || ''), esc(x.object || ''), esc(x.category || '')].filter(Boolean).join(' · ');
+    const tag = !x.pl ? `<span class="tag">${x.dup ? 'касса · уже в доходах' : 'движение кассы'}</span>` : '';
+    return `<div class="li"><div class="t1 row" style="gap:10px;flex-wrap:nowrap"><span class="ev"><span class="ic ${x.dir === 'in' ? 'hl' : ''}">${ic(OP_IC[x.type] || 'money', 13)}</span></span><span style="min-width:0;overflow:hidden;text-overflow:ellipsis">${esc(x.title)}</span></div>
+      <div class="amt ${x.dir === 'in' ? 'up' : ''}">${x.dir === 'in' ? '+' : '−'}${money(x.amount)}</div>
+      <div class="t2" style="grid-column:1/-1;padding-left:32px"><span>${meta}</span>${tag}<span class="faint">${dt(x.ts)}</span></div></div>`;
+  }
+  const dayName = (ts) => { const t = new Date(ts).toLocaleDateString('ru-RU', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }).replace(/ г\.$/, ''); return t[0].toUpperCase() + t.slice(1); };
+  async function pageMoney(r) {
+    const q = r.q;
+    const [f, team] = await Promise.all([api(`/api/head/money?${new URLSearchParams(q)}`), api('/api/head/users')]);
+    const presets = periodPresets();
+    const link = (extra) => `#/money?${new URLSearchParams({ ...q, ...extra })}`;
+    const t = f.totals;
+    // группировка по дням
+    const days = []; let curDay = null;
+    for (const x of f.items) {
+      const k = new Date(x.ts).toDateString();
+      if (!curDay || curDay.k !== k) { curDay = { k, ts: x.ts, items: [], in: 0, out: 0 }; days.push(curDay); }
+      curDay.items.push(x); if (x.dir === 'in') curDay.in += x.amount; else curDay.out += x.amount;
+    }
+    const daysHtml = days.map((d) => `<div class="card flush" style="margin-bottom:12px"><div class="card-h" style="padding:12px 20px;margin:0;background:var(--surface-2);border-bottom:1px solid var(--line)">
+        <b>${esc(dayName(d.ts))}</b><span class="small num">${d.in ? `<span class="up">+${money(d.in)}</span>` : ''}${d.in && d.out ? ' · ' : ''}${d.out ? `−${money(d.out)}` : ''}</span></div>
+      <div class="list">${d.items.map(opRow).join('')}</div></div>`).join('');
+    return `${head('Операции', 'Вся история денег: доходы, расходы по заявкам, доставка и каждое движение кассы', `<a class="btn soft" href="/api/head/export?${new URLSearchParams({ type: 'money', from: f.range.from, to: f.range.to, ...(q.type ? { type2: q.type } : {}) })}" download>${ic('download')} CSV</a>`)}
+      <div class="grid-kpi">
+        ${kpi('Доходы', `+${money(t.income)}`, 'подтверждённые', '', 'var(--c-in)')}
+        ${kpi('Расходы', `−${money(t.expenses)}`, 'заявки, доставка, касса', '', 'var(--c-out)')}
+        ${kpi('Итог', money(t.profit), 'доходы минус расходы', 'ink')}
+        ${kpi('Касса за период', `+${money(t.cash_in)} / −${money(t.cash_out)}`, 'пришло / ушло наличными')}
+      </div>
+      <div class="filters">
+        <div class="tabs">${presets.map(([tt, from, to]) => `<a href="${link({ from, to })}" class="${f.range.from === from && f.range.to === to ? 'on' : ''}">${tt}</a>`).join('')}</div>
+        <div class="tabs">${[['', 'Все'], ['in', 'Приходы'], ['out', 'Расходы'], ['cash', 'Касса'], ['pl', 'Только доходы и расходы']].map(([k, tt]) => `<a href="${link({ type: k })}" class="${(q.type || '') === k ? 'on' : ''}">${tt}</a>`).join('')}</div>
+      </div>
+      <form class="filters" id="mf"><input class="input" name="q" placeholder="Поиск: что, номер, объект, клиент" value="${esc(q.q || '')}">
+        <select class="input" name="user"><option value="">Все сотрудники</option>${team.items.map((u) => `<option value="${u.id}" ${String(q.user) === String(u.id) ? 'selected' : ''}>${esc(u.name)}</option>`).join('')}</select></form>
+      ${daysHtml || `<div class="card empty">${ic('money', 32)}За этот период операций нет</div>`}
+      ${f.items.length >= 1000 ? '<p class="faint small">Показаны последние 1000 операций — сузьте период.</p>' : ''}`;
+  }
+  pageMoney.after = (r) => {
+    const f = $('#mf'); let tm;
+    const go2 = () => { const p = new URLSearchParams(r.q); for (const el of f.elements) { if (el.value) p.set(el.name, el.value); else p.delete(el.name); } go(`#/money?${p}`); };
+    f.oninput = (e) => { clearTimeout(tm); tm = setTimeout(go2, e.target.name === 'q' ? 450 : 0); };
+    f.onsubmit = (e) => { e.preventDefault(); go2(); };
+  };
+
   // ================= Касса =================
   let cashData = null;
   const CASH_KIND_IC = { topup: 'plus', income: 'coins', return: 'refresh', issue: 'wallet', expense: 'receipt', withdraw: 'upload', recount: 'scale' };
@@ -1579,7 +1630,7 @@
     
   };
   function pageMore() {
-    const links = [['/cash', 'wallet', 'Касса'], ['/incomes', 'coins', 'Доходы'], ['/journal', 'history', 'Журнал'], ['/team', 'users', 'Команда'], ['/settings', 'sliders', 'Настройки'], ['/new', 'plus', 'Новая заявка'], ['/profile', 'user', 'Профиль']];
+    const links = [['/analytics', 'chart', 'Аналитика'], ['/control', 'shield', 'Контроль'], ['/money', 'money', 'Операции'], ['/cash', 'wallet', 'Касса'], ['/incomes', 'coins', 'Доходы'], ['/journal', 'history', 'Журнал'], ['/team', 'users', 'Команда'], ['/settings', 'sliders', 'Настройки'], ['/new', 'plus', 'Новая заявка'], ['/profile', 'user', 'Профиль']];
     return `${head('Ещё')}<div class="card flush"><div class="list">${links.map(([p, i, t]) => `<a class="li" href="#${p}"><div class="t1 row">${ic(i)} ${t}</div><div>${ic('chevronRight')}</div></a>`).join('')}</div></div>`;
   }
 

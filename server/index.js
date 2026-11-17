@@ -210,6 +210,7 @@ function headHome(user) {
     to_close: q(['review']),
     incomes: db.prepare("SELECT i.*, u.name user_name FROM incomes i JOIN users u ON u.id = i.user_id WHERE i.status='new' ORDER BY i.id LIMIT 50").all().map((i) => ({ ...i, number: L.incNumber(i.id) })),
     openings: cash.listOpenings(user).filter((o) => o.status === 'pending'),
+    recent_ops: A.moneyFeed({ from: new Date(Date.now() - 60 * 864e5).toISOString().slice(0, 10) }).items.slice(0, 8),
     corrections: db.prepare(`SELECT c.*, u.name user_name, CASE c.entity WHEN 'request' THEN printf('З-%05d', c.entity_id) ELSE printf('Д-%05d', c.entity_id) END number
       FROM corrections c JOIN users u ON u.id = c.user_id WHERE c.status='pending' ORDER BY c.id`).all(),
     overview: A.overview({}),
@@ -317,6 +318,11 @@ function exportCsv(q) {
       ...rows.map((r) => [r.number, r.date, r.title, r.client, r.object, r.category, nf(r.amount), r.method, r.status_text, r.user_name])]);
   }
   if (q.type === 'cash') return csv(cash.csvRows(q));
+  if (q.type === 'money') {
+    const f = A.moneyFeed(q);
+    return csv([['Дата', 'Операция', 'Что', 'Приход', 'Расход', 'Основание', 'Кто', 'Объект', 'Категория', 'Влияет на прибыль'],
+      ...f.items.map((x) => [d(x.ts), x.kind_text, x.title, x.dir === 'in' ? nf(x.amount) : '', x.dir === 'out' ? nf(x.amount) : '', x.source, x.user_name, x.object || '', x.category || '', x.pl ? 'да' : 'нет (движение кассы)'])]);
+  }
   if (q.type === 'items') {
     const rows = db.prepare(`SELECT r.id, r.closed_at, r.object, r.category, u.name, i.name item, i.qty, i.unit, i.price, i.actual_qty, i.actual_price, i.shop, i.url
       FROM request_items i JOIN requests r ON r.id = i.request_id JOIN users u ON u.id = r.user_id WHERE r.status='closed' ORDER BY r.closed_at DESC`).all();
@@ -463,6 +469,7 @@ async function api(req, res, url) {
   if (p.startsWith('/api/head/')) {
     needHead(user);
     if (p === '/api/head/overview' && m === 'GET') return ok(A.overview(q));
+    if (p === '/api/head/money' && m === 'GET') return ok(A.moneyFeed(q));
     if (p === '/api/head/prices' && m === 'GET') return ok({ items: A.priceCatalog(q) });
     if (p === '/api/head/control' && m === 'GET') return ok(A.controlFeed());
     if (p === '/api/head/events' && m === 'GET') return ok({ items: eventsFeed(q) });
