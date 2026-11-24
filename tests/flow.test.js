@@ -238,6 +238,7 @@ test('полный цикл заявки и защита', async () => {
   const ct = await eng('POST', '/api/cash', { kind: 'topup', amount: 200, comment: 'Из сейфа' });
   assert.equal(ct.data.balance, bal0 + 200);
   const cx = await eng('POST', '/api/cash', { kind: 'expense', amount: 50, comment: 'Вода', category: 'Хозтовары' });
+  assert.equal(cx.status, 200, JSON.stringify(cx.data) + ' bal0=' + bal0);
   assert.equal((await head('GET', '/api/cash')).data.items[0].user_name, 'Инженер', 'руководитель видит операции кассира');
   assert.equal((await eng('POST', `/api/head/cash/${cx.data.id}/void`, { reason: 'x' })).status, 403, 'отменяет только руководитель');
   assert.equal((await other('GET', '/api/cash')).status, 403);
@@ -252,6 +253,29 @@ test('полный цикл заявки и защита', async () => {
   const b4 = (await head('GET', '/api/cash')).data.balance;
   await head('POST', `/api/openings/${op4}/decide`, { approve: true, target: 'cash' });
   assert.equal((await head('GET', '/api/cash')).data.balance, b4 + 100);
+
+  // оплата из кассы: покупка в магазине (id3, 420 ₴) при проведении списалась из кассы, но не стала вторым расходом
+  const d3 = (await head('GET', `/api/requests/${id3}`)).data;
+  assert.equal(d3.pay_from, 'cash'); assert.equal(d3.cash_paid, true);
+  const cashOps = (await head('GET', '/api/cash?from=2000-01-01')).data.items;
+  assert.ok(cashOps.some((o) => o.request_id === id3 && o.kind === 'expense' && o.amount === 420 && !o.removed_at));
+  const pl = (await head('GET', '/api/head/overview')).data.current;
+  assert.equal(pl.cash_expenses, 50, 'в расходах кассы только «Вода» (50), оплата заявки из кассы не дублирует расход');
+  // прошлые расходы: первая заявка (онлайн, 315 ₴) ещё не прошла через кассу
+  const unpaid = (await head('GET', '/api/cash/unpaid')).data.items;
+  assert.ok(unpaid.some((x) => x.id === id));
+  assert.ok(!unpaid.some((x) => x.id === id3), 'уже оплаченное не предлагается');
+  assert.equal((await eng('POST', '/api/cash/unpaid', { ids: [id], action: 'cash' })).status, 403, 'решает руководитель');
+  const balPrev = (await head('GET', '/api/cash')).data.balance;
+  const st = (await head('POST', '/api/cash/unpaid', { ids: [id], action: 'cash' })).data;
+  assert.equal(st.count, 1); assert.equal(st.balance, Math.round((balPrev - 315) * 100) / 100);
+  assert.ok(!(await head('GET', '/api/cash/unpaid')).data.items.some((x) => x.id === id));
+  // доставка из кассы уменьшает кассу; удаление доставки — возвращает
+  const balD = (await head('GET', '/api/cash')).data.balance;
+  const dd = (await head('POST', `/api/requests/${id3}/deliveries`, { amount: 60, paid_by: 'cash', carrier: 'Нова пошта' })).data.request.deliveries.at(-1);
+  assert.equal((await head('GET', '/api/cash')).data.balance, balD - 60);
+  await head('DELETE', `/api/deliveries/${dd.id}`);
+  assert.equal((await head('GET', '/api/cash')).data.balance, balD);
 
   // история операций: доходы, расходы по заявкам, доставка и касса в одной ленте
   const feed = (await head('GET', '/api/head/money')).data;

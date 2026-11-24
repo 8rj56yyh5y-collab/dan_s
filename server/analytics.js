@@ -24,7 +24,7 @@ function range(q) {
 function totals(fromTs, toTs, fromD, toD) {
   const exp = db.prepare("SELECT COALESCE(SUM(actual_total),0) s, COUNT(*) n FROM requests WHERE status='closed' AND closed_at BETWEEN ? AND ?").get(fromTs, toTs);
   const del = db.prepare('SELECT COALESCE(SUM(amount),0) s FROM delivery_costs WHERE ts BETWEEN ? AND ?').get(fromTs, toTs).s;
-  const cash = db.prepare("SELECT COALESCE(SUM(amount),0) s FROM cash_ops WHERE kind = 'expense' AND removed_at IS NULL AND ts BETWEEN ? AND ?").get(fromTs, toTs).s;
+  const cash = db.prepare("SELECT COALESCE(SUM(amount),0) s FROM cash_ops WHERE kind = 'expense' AND request_id IS NULL AND removed_at IS NULL AND ts BETWEEN ? AND ?").get(fromTs, toTs).s;
   const inc = db.prepare("SELECT COALESCE(SUM(amount),0) s, COUNT(*) n FROM incomes WHERE status='confirmed' AND date BETWEEN ? AND ?").get(fromD, toD);
   const expenses = exp.s + del + cash;
   return { expenses: round2(expenses), delivery: round2(del), cash_expenses: round2(cash), expense_count: exp.n, income: round2(inc.s), income_count: inc.n, profit: round2(inc.s - expenses) };
@@ -52,7 +52,7 @@ function overview(q) {
   for (const row of db.prepare("SELECT closed_at, actual_total FROM requests WHERE status='closed' AND closed_at >= ?").all(m0)) {
     const k = ym(row.closed_at); if (byMonth[k]) byMonth[k].expenses += row.actual_total || 0;
   }
-  for (const row of db.prepare("SELECT ts, amount FROM delivery_costs WHERE ts >= ? UNION ALL SELECT ts, amount FROM cash_ops WHERE kind = 'expense' AND removed_at IS NULL AND ts >= ?").all(m0, m0)) {
+  for (const row of db.prepare("SELECT ts, amount FROM delivery_costs WHERE ts >= ? UNION ALL SELECT ts, amount FROM cash_ops WHERE kind = 'expense' AND request_id IS NULL AND removed_at IS NULL AND ts >= ?").all(m0, m0)) {
     const k = ym(row.ts); if (byMonth[k]) byMonth[k].expenses += row.amount;
   }
   for (const row of db.prepare("SELECT date, amount FROM incomes WHERE status='confirmed' AND date >= ?").all(`${months[0]}-01`)) {
@@ -64,7 +64,7 @@ function overview(q) {
   const byCategory = db.prepare(`SELECT COALESCE(NULLIF(category,''),'Без категории') k, SUM(actual_total) s, COUNT(*) n FROM requests WHERE ${closedIn} GROUP BY k ORDER BY s DESC`).all(r.fromTs, r.toTs);
   const delIn = db.prepare('SELECT COALESCE(SUM(amount),0) s, COUNT(*) n FROM delivery_costs WHERE ts BETWEEN ? AND ?').get(r.fromTs, r.toTs);
   if (delIn.s) byCategory.push({ k: 'Доставка', s: delIn.s, n: delIn.n });
-  for (const row of db.prepare("SELECT COALESCE(NULLIF(category,''),'Прочее') k, SUM(amount) s, COUNT(*) n FROM cash_ops WHERE kind = 'expense' AND removed_at IS NULL AND ts BETWEEN ? AND ? GROUP BY k").all(r.fromTs, r.toTs)) {
+  for (const row of db.prepare("SELECT COALESCE(NULLIF(category,''),'Прочее') k, SUM(amount) s, COUNT(*) n FROM cash_ops WHERE kind = 'expense' AND request_id IS NULL AND removed_at IS NULL AND ts BETWEEN ? AND ? GROUP BY k").all(r.fromTs, r.toTs)) {
     const x = byCategory.find((y) => y.k === row.k);
     if (x) { x.s += row.s; x.n += row.n; } else byCategory.push(row);
   }
@@ -85,7 +85,7 @@ function overview(q) {
   const touch = (k) => { if (!objMap.has(k)) objMap.set(k, { k, income: 0, expenses: 0 }); return objMap.get(k); };
   for (const row of db.prepare(`SELECT COALESCE(NULLIF(object,''),'Без объекта') k, SUM(actual_total) s FROM requests WHERE ${closedIn} GROUP BY k`).all(r.fromTs, r.toTs)) touch(row.k).expenses = round2(row.s);
   for (const row of db.prepare("SELECT COALESCE(NULLIF(object,''),'Без объекта') k, SUM(amount) s FROM delivery_costs WHERE ts BETWEEN ? AND ? GROUP BY k").all(r.fromTs, r.toTs)) touch(row.k).expenses = round2(touch(row.k).expenses + row.s);
-  for (const row of db.prepare("SELECT COALESCE(NULLIF(object,''),'Без объекта') k, SUM(amount) s FROM cash_ops WHERE kind = 'expense' AND removed_at IS NULL AND ts BETWEEN ? AND ? GROUP BY k").all(r.fromTs, r.toTs)) touch(row.k).expenses = round2(touch(row.k).expenses + row.s);
+  for (const row of db.prepare("SELECT COALESCE(NULLIF(object,''),'Без объекта') k, SUM(amount) s FROM cash_ops WHERE kind = 'expense' AND request_id IS NULL AND removed_at IS NULL AND ts BETWEEN ? AND ? GROUP BY k").all(r.fromTs, r.toTs)) touch(row.k).expenses = round2(touch(row.k).expenses + row.s);
   for (const row of db.prepare("SELECT COALESCE(NULLIF(object,''),'Без объекта') k, SUM(amount) s FROM incomes WHERE status='confirmed' AND date BETWEEN ? AND ? GROUP BY k").all(r.from, r.to)) touch(row.k).income = round2(row.s);
   const byObject = [...objMap.values()].map((o) => ({ ...o, profit: round2(o.income - o.expenses) })).sort((a, b) => b.income + b.expenses - (a.income + a.expenses));
 
@@ -127,6 +127,13 @@ function advances(userId) {
   for (const d of dels) {
     const x = rows.find((y) => y.id === d.id);
     if (x) x.delivery = d.s; else rows.push({ id: d.id, name: d.name, open_amount: 0, open_count: 0, closed_diff: 0, delivery: d.s });
+  }
+  // Покупки «своими деньгами» без выдачи под отчёт — компания должна сотруднику.
+  const selfPaid = db.prepare(`SELECT r.user_id id, u.name, SUM(r.actual_total) s FROM requests r JOIN users u ON u.id = r.user_id
+    WHERE r.status = 'closed' AND r.issued_amount IS NULL AND r.paid_from = 'self' ${where} GROUP BY r.user_id`).all(...args);
+  for (const d of selfPaid) {
+    const x = rows.find((y) => y.id === d.id);
+    if (x) x.delivery = (x.delivery || 0) + d.s; else rows.push({ id: d.id, name: d.name, open_amount: 0, open_count: 0, closed_diff: 0, delivery: d.s });
   }
   return rows.map((x) => ({ ...x, open_amount: round2(x.open_amount || 0), closed_diff: round2(x.closed_diff || 0), delivery: round2(x.delivery || 0),
     balance: round2((x.open_amount || 0) + (x.closed_diff || 0) - (x.delivery || 0)) }))
@@ -214,13 +221,14 @@ function moneyFeed(q = {}) {
       source: `З-${num(x.request_id)}`, link: `/r/${x.request_id}`, user_name: x.user_name, user_id: x.user_id, object: x.object, category: 'Доставка' });
   }
   for (const x of db.prepare("SELECT i.*, u.name user_name FROM incomes i JOIN users u ON u.id = i.user_id WHERE i.status = 'confirmed' AND i.date BETWEEN ? AND ?").all(r.from, r.to)) {
-    rows.push({ key: `i${x.id}`, ts: Math.max(Date.parse(`${x.date}T12:00:00`), 0), type: 'income', pl: true, dir: 'in', amount: x.amount, title: x.title,
+    rows.push({ key: `i${x.id}`, ts: Math.min(Date.parse(`${x.date}T12:00:00`), x.decided_at || Date.now()), type: 'income', pl: true, dir: 'in', amount: x.amount, title: x.title,
       kind_text: `Доход · ${{ cash: 'наличные', card: 'карта', account: 'на счёт' }[x.method]}`, source: `Д-${num(x.id)}`, link: `/income/${x.id}`, user_name: x.user_name, user_id: x.user_id,
       object: x.object, category: x.category, client: x.client });
   }
   for (const x of db.prepare(`SELECT c.*, u.name user_name FROM cash_ops c JOIN users u ON u.id = c.user_id
       WHERE c.removed_at IS NULL AND c.ts BETWEEN ? AND ?`).all(r.fromTs, r.toTs)) {
-    rows.push({ key: `c${x.id}`, ts: x.ts, type: x.kind === 'expense' ? 'expense' : 'cash', pl: x.kind === 'expense', cash: true, dir: x.direction, amount: x.amount,
+    const own = x.kind === 'expense' && !x.request_id; // расход из кассы без заявки — сам по себе расход
+    rows.push({ key: `c${x.id}`, ts: x.ts, type: own ? 'expense' : 'cash', pl: own, cash: true, dir: x.direction, amount: x.amount,
       title: x.comment || CASH_TITLES[x.kind], kind_text: CASH_TITLES[x.kind], source: x.request_id ? `З-${num(x.request_id)}` : x.income_id ? `Д-${num(x.income_id)}` : 'Касса',
       link: x.request_id ? `/r/${x.request_id}` : x.income_id ? `/income/${x.income_id}` : '/cash', user_name: x.user_name, user_id: x.user_id, object: x.object, category: x.category,
       // доход наличными уже есть в ленте как доход — в кассе показываем его как движение, но не дублируем в итогах прибыли

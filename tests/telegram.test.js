@@ -83,7 +83,7 @@ test('бот: привязка, уведомления и решения кно�
   const id = (await eng('POST', '/api/requests', { kind: 'purchase', title: 'Труба', channel: 'offline', items: [{ name: 'Труба 40х20', qty: 2, price: 100 }] })).data.id;
   const note = await waitFor(() => msgTo(111, /Новая заявка/), 'уведомление о заявке');
   const buttons = note.reply_markup.inline_keyboard.flat();
-  assert.ok(buttons.some((b) => b.callback_data === `h:approve:r:${id}`));
+  assert.ok(buttons.some((b) => b.callback_data === `h:approve:r:${id}:main`), "кнопка несёт подразделение");
   assert.ok(buttons.some((b) => b.url === `https://bh.example.com/#/r/${id}`));
   assert.ok(!msgTo(222, /Новая заявка/), 'сотрудник не получает уведомление о своей же заявке');
 
