@@ -142,6 +142,38 @@ function csvRows(q) {
       nf(o.balance_after), o.category, o.object, o.request_number || o.income_number || '', o.comment, o.user_name, o.removed_at ? `да: ${o.remove_reason}` : ''])];
 }
 
+// ---------- прошлые расходы, которые ещё не прошли через кассу ----------
+// Проведённые заявки без выдачи под отчёт, где не указано «картой/счётом компании» или «своими деньгами»
+// и по которым касса ещё не уменьшалась.
+function unpaidPast(user) {
+  needCash(user);
+  return db.prepare(`SELECT r.id, r.title, r.closed_at, r.actual_total, r.channel, r.kind, r.paid_from, r.object, u.name user_name
+    FROM requests r JOIN users u ON u.id = r.user_id
+    WHERE r.status = 'closed' AND r.issued_amount IS NULL AND r.actual_total > 0 AND r.paid_from NOT IN ('company','self')
+      AND NOT EXISTS (SELECT 1 FROM cash_ops c WHERE c.request_id = r.id AND c.kind = 'expense' AND c.delivery_id IS NULL AND c.removed_at IS NULL)
+    ORDER BY r.closed_at`).all().map((r) => ({ ...r, number: L.reqNumber(r.id) }));
+}
+// action: cash — списать из кассы датой проведения; company/self — оплачено не из кассы, убрать из списка.
+function settlePast(user, ids, action) {
+  needHead(user);
+  if (!['cash', 'company', 'self'].includes(action)) throw new HttpError(400, 'Неизвестное действие');
+  const list = (Array.isArray(ids) ? ids : []).map(Number).filter(Boolean).slice(0, 1000);
+  if (!list.length) throw new HttpError(400, 'Отметьте заявки');
+  const allowed = new Map(unpaidPast(user).map((r) => [r.id, r]));
+  return tx(() => {
+    let n = 0; let sum = 0;
+    for (const id of list) {
+      if (!allowed.has(id)) continue;
+      const r = L.loadRequest(id);
+      db.prepare('UPDATE requests SET paid_from = ? WHERE id = ?').run(action, id);
+      if (action === 'cash') { L.cashPayRequest(user, { ...r, paid_from: 'cash' }, r.actual_total, r.closed_at); sum += r.actual_total; }
+      logEvent(user.id, 'request', id, 'paid_from_set', { paid_from: L.PAY_FROM[action], amount: r.actual_total, past: true });
+      n++;
+    }
+    return { count: n, sum: round2(sum), balance: L.cashBalance() };
+  });
+}
+
 // ---------- начальный остаток (по согласованию) ----------
 const TARGETS = { cash: 'В кассу БХ', advance: 'Мои деньги под отчёт' };
 
@@ -228,4 +260,4 @@ function listOpenings(user) {
     .map((o) => ({ ...o, target_text: TARGETS[o.target] }));
 }
 
-module.exports = { KINDS, MANUAL, TARGETS, canCash, moveOpeningToCash, createOp, removeOp, report, csvRows, createOpening, decideOpening, listOpenings };
+module.exports = { KINDS, MANUAL, TARGETS, canCash, moveOpeningToCash, unpaidPast, settlePast, createOp, removeOp, report, csvRows, createOpening, decideOpening, listOpenings };

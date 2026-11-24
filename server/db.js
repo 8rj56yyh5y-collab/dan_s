@@ -133,7 +133,7 @@ CREATE TABLE IF NOT EXISTS deliveries (
   amount REAL NOT NULL,
   carrier TEXT NOT NULL DEFAULT '',
   ttn TEXT NOT NULL DEFAULT '',
-  paid_by TEXT NOT NULL DEFAULT 'self' CHECK (paid_by IN ('advance','self','company')),
+  paid_by TEXT NOT NULL DEFAULT 'self' CHECK (paid_by IN ('advance','self','company','cash')),
   comment TEXT NOT NULL DEFAULT '',
   file_id INTEGER REFERENCES files(id),
   created_at INTEGER NOT NULL,
@@ -232,6 +232,22 @@ addColumn('users', 'tg_link_expires', 'tg_link_expires INTEGER');
 addColumn('requests', 'receipt_total', 'receipt_total REAL');
 addColumn('requests', 'report_comment', "report_comment TEXT NOT NULL DEFAULT ''");
 addColumn('requests', 'no_breakdown', 'no_breakdown INTEGER NOT NULL DEFAULT 0');
+addColumn('requests', 'paid_from', "paid_from TEXT NOT NULL DEFAULT ''");
+addColumn('cash_ops', 'delivery_id', 'delivery_id INTEGER');
+// Старые базы: в доставке разрешаем оплату «из кассы» (CHECK в SQLite меняется только пересозданием таблицы).
+{
+  const ddl = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'deliveries'").get()?.sql || '';
+  if (ddl && !ddl.includes("'cash'")) {
+    const viewSql = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'view' AND name = 'delivery_costs'").get()?.sql;
+    db.exec('PRAGMA foreign_keys = OFF; BEGIN;');
+    db.exec('DROP VIEW IF EXISTS delivery_costs');
+    db.exec('ALTER TABLE deliveries RENAME TO deliveries_old');
+    db.exec(ddl.replace("('advance','self','company')", "('advance','self','company','cash')"));
+    db.exec('INSERT INTO deliveries SELECT * FROM deliveries_old; DROP TABLE deliveries_old;');
+    if (viewSql) db.exec(viewSql);
+    db.exec('CREATE INDEX IF NOT EXISTS deliveries_req ON deliveries(request_id); COMMIT; PRAGMA foreign_keys = ON;');
+  }
+}
 addColumn('requests', 'issued_from_cash', 'issued_from_cash INTEGER NOT NULL DEFAULT 0');
 
 const DEFAULT_SETTINGS = {

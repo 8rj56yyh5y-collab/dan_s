@@ -117,6 +117,7 @@ function seed() {
     if (r.status === 'closed' && r.returned_amount > 0) ops.push([r.closed_at, 'in', 'return', r.returned_amount, '', r.object, `Возврат остатка: ${r.title}`, r.id, null]);
   }
   db.prepare('UPDATE requests SET issued_from_cash = 1 WHERE issued_amount IS NOT NULL').run();
+  db.prepare("UPDATE requests SET paid_from = 'company' WHERE issued_amount IS NULL").run();
   for (const i of db.prepare("SELECT * FROM incomes WHERE status = 'confirmed' AND method = 'cash'").all()) {
     ops.push([Date.parse(`${i.date}T12:00:00`), 'in', 'income', i.amount, i.category, i.object, i.title, null, i.id]);
   }

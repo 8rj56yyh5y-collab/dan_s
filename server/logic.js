@@ -151,9 +151,9 @@ function planFields(body, settings) {
 const cashBalance = () => round2(db.prepare("SELECT COALESCE(SUM(CASE direction WHEN 'in' THEN amount ELSE -amount END),0) s FROM cash_ops WHERE removed_at IS NULL").get().s);
 function cashInsert(op) {
   const now = Date.now();
-  const res = db.prepare(`INSERT INTO cash_ops (ts, direction, kind, amount, category, object, comment, request_id, income_id, user_id, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(op.ts || now, op.direction, op.kind, round2(op.amount), op.category || '', op.object || '', op.comment || '', op.request_id || null, op.income_id || null, op.user_id, now);
+  const res = db.prepare(`INSERT INTO cash_ops (ts, direction, kind, amount, category, object, comment, request_id, income_id, delivery_id, user_id, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(op.ts || now, op.direction, op.kind, round2(op.amount), op.category || '', op.object || '', op.comment || '', op.request_id || null, op.income_id || null, op.delivery_id || null, op.user_id, now);
   return Number(res.lastInsertRowid);
 }
 // Автоматическая операция отменяется, если отменили то, что её породило (корректировка).
@@ -163,6 +163,23 @@ function cashVoid(where, args, userId, reason) {
     db.prepare('UPDATE cash_ops SET removed_at = ?, removed_by = ?, remove_reason = ? WHERE id = ?').run(Date.now(), userId, reason, o.id);
     logEvent(userId, 'cash', o.id, 'cash_voided', { kind: o.kind, amount: o.amount, reason });
   }
+}
+
+// Чем оплачена покупка (если деньги не выдавались под отчёт).
+const PAY_FROM = { cash: 'Из кассы БХ', company: 'Картой / счётом компании', self: 'Своими деньгами — вернуть мне' };
+function payFromOf(r) {
+  if (r.issued_amount != null) return 'advance';
+  if (PAY_FROM[r.paid_from]) return r.paid_from;
+  return r.channel === 'offline' ? 'cash' : 'company';
+}
+// Проведённая покупка, оплаченная из кассы, списывает деньги из кассы (один раз).
+// В прибыль идёт сама заявка; операция кассы — только движение наличных, поэтому у неё есть request_id.
+function cashPayRequest(user, r, actual, ts) {
+  if (payFromOf(r) !== 'cash' || !(actual > 0)) return null;
+  const has = db.prepare("SELECT id FROM cash_ops WHERE kind = 'expense' AND request_id = ? AND delivery_id IS NULL AND removed_at IS NULL").get(r.id);
+  if (has) return null;
+  return cashInsert({ direction: 'out', kind: 'expense', amount: actual, request_id: r.id, object: r.object, category: r.category,
+    comment: `Оплачено из кассы: ${r.title}`.slice(0, 300), user_id: user.id, ts });
 }
 
 // ---------- заявки ----------
@@ -283,17 +300,18 @@ function writeReport(user, r, body, before, action) {
     if (body.receipt_total !== '' && body.receipt_total != null && receiptTotal == null) throw new HttpError(400, 'Проверьте сумму по чеку');
   }
   const noBreakdown = body.no_breakdown === undefined ? (r.no_breakdown ? 1 : 0) : (body.no_breakdown ? 1 : 0);
+  const paidFrom = PAY_FROM[body.paid_from] ? body.paid_from : (r.paid_from || '');
   const reportComment = body.report_comment === undefined ? (r.report_comment || '') : str(body.report_comment, 1000);
   const changes = [
     ...diffItems(before, items, ['actual_qty', 'actual_price', ...(r.kind === 'money' ? ['qty', 'price'] : [])]),
-    ...diffFields(r, { returned_amount: returned, receipt_total: receiptTotal, report_comment: reportComment, no_breakdown: noBreakdown },
-      ['returned_amount', 'receipt_total', 'report_comment', 'no_breakdown']),
+    ...diffFields(r, { returned_amount: returned, receipt_total: receiptTotal, report_comment: reportComment, no_breakdown: noBreakdown, paid_from: paidFrom },
+      ['returned_amount', 'receipt_total', 'report_comment', 'no_breakdown', 'paid_from']),
   ];
   if (!changes.length) return { changed: false };
   writeItems(r.id, items);
   const total = reportActual(itemsOf(r.id), receiptTotal, noBreakdown);
-  db.prepare('UPDATE requests SET actual_total = ?, returned_amount = ?, receipt_total = ?, report_comment = ?, no_breakdown = ?, updated_at = ? WHERE id = ?')
-    .run(total, returned, receiptTotal, reportComment, noBreakdown, now, r.id);
+  db.prepare('UPDATE requests SET actual_total = ?, returned_amount = ?, receipt_total = ?, report_comment = ?, no_breakdown = ?, paid_from = ?, updated_at = ? WHERE id = ?')
+    .run(total, returned, receiptTotal, reportComment, noBreakdown, paidFrom, now, r.id);
   logEvent(user.id, 'request', r.id, action, { changes, actual_total: total, receipt_total: receiptTotal });
   return { changed: true };
 }
@@ -426,7 +444,8 @@ function headAction(user, id, action, body = {}) {
         if (fresh.issued_from_cash && fresh.returned_amount > 0) {
           cashInsert({ direction: 'in', kind: 'return', amount: fresh.returned_amount, request_id: r.id, object: r.object, comment: `Возврат остатка: ${r.title}`.slice(0, 300), user_id: user.id });
         }
-        logEvent(user.id, 'request', r.id, 'closed', { actual_total: fresh.actual_total, comment, by_head_report: true });
+        const paidA = cashPayRequest(user, fresh, c.actual);
+        logEvent(user.id, 'request', r.id, 'closed', { actual_total: fresh.actual_total, comment, by_head_report: true, cash_paid: paidA ? c.actual : null });
         break;
       }
       case 'close':
@@ -436,7 +455,8 @@ function headAction(user, id, action, body = {}) {
         if (r.issued_from_cash && r.returned_amount > 0) {
           cashInsert({ direction: 'in', kind: 'return', amount: r.returned_amount, request_id: r.id, object: r.object, comment: `Возврат остатка: ${r.title}`.slice(0, 300), user_id: user.id });
         }
-        logEvent(user.id, 'request', r.id, 'closed', { actual_total: r.actual_total, comment, cash_return: r.issued_from_cash && r.returned_amount > 0 ? r.returned_amount : null });
+        const paidC = cashPayRequest(user, r, r.actual_total);
+        logEvent(user.id, 'request', r.id, 'closed', { actual_total: r.actual_total, comment, cash_return: r.issued_from_cash && r.returned_amount > 0 ? r.returned_amount : null, cash_paid: paidC ? r.actual_total : null });
         break;
       case 'comment':
         if (!comment) throw new HttpError(400, 'Пустой комментарий');
@@ -530,7 +550,7 @@ function removeFile(user, id) {
 // ---------- доставка ----------
 const DELIVERY_STATUSES = ['approved', 'issued', 'review', 'report_revision', 'closed'];
 const CARRIERS = ['Нова пошта', 'Укрпошта', 'Meest', 'Курьер', 'Другое'];
-const PAID_BY = { advance: 'Из выданных денег', self: 'Оплатил сам — вернуть', company: 'Оплатила компания' };
+const PAID_BY = { cash: 'Из кассы БХ', advance: 'Из выданных денег', self: 'Оплатил сам — вернуть', company: 'Оплатила компания' };
 
 const deliveriesOf = (rid) => db.prepare(`SELECT d.*, u.name user_name FROM deliveries d JOIN users u ON u.id = d.user_id
   WHERE d.request_id = ? AND d.removed_at IS NULL ORDER BY d.id`).all(rid);
@@ -555,6 +575,7 @@ function addDelivery(user, rid, body) {
     const res = db.prepare(`INSERT INTO deliveries (request_id, user_id, amount, carrier, ttn, paid_by, comment, file_id, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(r.id, user.id, amount, carrier, ttn, paid_by, str(body.comment, 500), fileId, Date.now());
     const id = Number(res.lastInsertRowid);
+    if (paid_by === 'cash') cashInsert({ direction: 'out', kind: 'expense', amount, request_id: r.id, delivery_id: id, object: r.object, category: 'Доставка', comment: `Доставка из кассы: ${carrier}${ttn ? ` ТТН ${ttn}` : ''} · ${r.title}`.slice(0, 300), user_id: user.id });
     logEvent(user.id, 'request', r.id, 'delivery_added', { amount, carrier, ttn, paid_by: PAID_BY[paid_by], after_close: r.status === 'closed' });
     return id;
   });
@@ -567,6 +588,7 @@ function removeDelivery(user, id) {
   const own = d.user_id === user.id && Date.now() - d.created_at < editMs();
   if (!(user.role === 'head' || own)) throw new HttpError(423, 'Удалить доставку можно в течение времени на правку. Дальше — через руководителя.');
   db.prepare('UPDATE deliveries SET removed_at = ?, removed_by = ? WHERE id = ?').run(Date.now(), user.id, d.id);
+  cashVoid('delivery_id = ?', [d.id], user.id, 'Доставка удалена');
   logEvent(user.id, 'request', r.id, 'delivery_removed', { amount: d.amount, carrier: d.carrier, ttn: d.ttn });
 }
 
@@ -630,7 +652,7 @@ function headIncomeAction(user, id, action, body = {}) {
     if (inc.status !== 'new') throw new HttpError(409, 'Запись уже обработана');
     tx(() => {
       db.prepare("UPDATE incomes SET status='confirmed', head_comment=?, decided_at=?, decided_by=?, updated_at=? WHERE id=?").run(comment, now, user.id, now, inc.id);
-      if (inc.method === 'cash') cashInsert({ direction: 'in', kind: 'income', amount: inc.amount, income_id: inc.id, object: inc.object, category: inc.category, comment: inc.title.slice(0, 300), user_id: user.id, ts: Math.max(Date.parse(`${inc.date}T12:00:00`) || now, 0) });
+      if (inc.method === 'cash') cashInsert({ direction: 'in', kind: 'income', amount: inc.amount, income_id: inc.id, object: inc.object, category: inc.category, comment: inc.title.slice(0, 300), user_id: user.id, ts: Math.min(Date.parse(`${inc.date}T12:00:00`) || now, now) });
     });
   } else if (action === 'reject') {
     if (inc.status !== 'new') throw new HttpError(409, 'Запись уже обработана');
@@ -675,7 +697,7 @@ function decideCorrection(user, id, approve, comment) {
         const r = loadRequest(c.entity_id);
         // Проведённый отчёт возвращается на проверку; остальное — просто открывается на правку.
         const status = r.status === 'closed' ? 'review' : r.status;
-        if (r.status === 'closed') cashVoid("kind = 'return' AND request_id = ?", [r.id], user.id, 'Отчёт открыт на корректировку');
+        if (r.status === 'closed') cashVoid("kind IN ('return','expense') AND request_id = ? AND delivery_id IS NULL", [r.id], user.id, 'Отчёт открыт на корректировку');
         db.prepare('UPDATE requests SET status=?, edit_until=?, closed_at = CASE WHEN ?=\'review\' AND status=\'closed\' THEN NULL ELSE closed_at END, updated_at=? WHERE id=?')
           .run(status, until, status, now, r.id);
       }
@@ -752,6 +774,7 @@ function flagsForRequest(r, items, files, settings = getSettings()) {
 }
 
 module.exports = {
+  PAY_FROM, payFromOf, cashPayRequest,
   cashBalance, cashInsert, cashVoid, fm,
   DELIVERY_STATUSES, CARRIERS, PAID_BY, deliveriesOf, deliveryTotal, canAddDelivery, addDelivery, removeDelivery,
   HttpError, STATUS, INCOME_STATUS, str, money, round2, isDate, reqNumber, incNumber, median,

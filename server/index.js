@@ -145,6 +145,7 @@ function requestDetail(user, id) {
     ...requestRow({ ...r, user_name: userName(r.user_id) }),
     purpose: r.purpose, head_comment: r.head_comment, returned_amount: r.returned_amount,
     receipt_total: r.receipt_total, report_comment: r.report_comment || '', no_breakdown: !!r.no_breakdown,
+    paid_from: r.paid_from || '', pay_from: L.payFromOf(r), cash_paid: !!db.prepare("SELECT id FROM cash_ops WHERE request_id = ? AND kind = 'expense' AND delivery_id IS NULL AND removed_at IS NULL").get(r.id),
     decided_at: r.decided_at, decided_by_name: userName(r.decided_by), reported_at: r.reported_at, closed_at: r.closed_at, closed_by_name: userName(r.closed_by),
     items: items.map((i) => ({ id: i.id, name: i.name, qty: i.qty, unit: i.unit, price: i.price, url: i.url, shop: i.shop, actual_qty: i.actual_qty, actual_price: i.actual_price })),
     files: files.map((f) => ({ ...f, sha256: undefined })),
@@ -452,6 +453,8 @@ async function api(req, res, url) {
     logEvent(user.id, 'export', null, 'exported', { type: 'cash' });
     return res.end(csv(cash.csvRows(q)));
   }
+  if (p === '/api/cash/unpaid' && m === 'GET') return ok({ items: cash.unpaidPast(user) });
+  if (p === '/api/cash/unpaid' && m === 'POST') return ok(cash.settlePast(user, body.ids, String(body.action || '')));
   if ((mt = p.match(/^\/api\/openings\/(\d+)\/to-cash$/)) && m === 'POST') { cash.moveOpeningToCash(user, mt[1]); return ok({ balance: L.cashBalance() }); }
 
   // начальный остаток (по согласованию)
