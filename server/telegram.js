@@ -3,7 +3,7 @@
 // Включается переменной TELEGRAM_BOT_TOKEN (бот создаётся у @BotFather). Без неё всё работает, просто без уведомлений.
 // Получение сообщений — long polling (getUpdates): не нужен вебхук и публичный адрес.
 const crypto = require('node:crypto');
-const { db, logEvent } = require('./db');
+const { db, logEvent, listDivisions, divisionDb, currentDivision, runInDivision, getSettings } = require('./db');
 const L = require('./logic');
 
 const BASE = (process.env.TELEGRAM_API_BASE || 'https://api.telegram.org').replace(/\/$/, '');
@@ -50,7 +50,8 @@ const heads = (exceptId) => db.prepare("SELECT id, tg_chat_id FROM users WHERE r
 const userChat = (id) => db.prepare('SELECT tg_chat_id FROM users WHERE id = ? AND active = 1').get(id)?.tg_chat_id;
 
 function keyboard(rows, link) {
-  const kb = rows.filter((r) => r.length).map((r) => r.map(([text, data]) => ({ text, callback_data: data })));
+  const div = currentDivision();
+  const kb = rows.filter((r) => r.length).map((r) => r.map(([text, data]) => ({ text, callback_data: data.startsWith('h:') ? `${data}:${div}` : data })));
   // Кнопка-ссылка: Telegram принимает только https-адреса.
   if (link && /^https:\/\//.test(publicUrl())) kb.push([{ text: 'Открыть в БХ Учёт', url: `${publicUrl()}/#${link}` }]);
   return kb.length ? { inline_keyboard: kb } : undefined;
@@ -65,8 +66,10 @@ async function send(chatId, text, rows = [], link = '') {
     else console.error('Telegram:', e.message);
   }
 }
-const toHeads = (exceptId, text, rows, link) => Promise.all(heads(exceptId).map((u) => send(u.tg_chat_id, text, rows, link)));
-const toUser = (id, text, rows, link) => send(userChat(id), text, rows, link);
+// Если подразделений несколько — каждое уведомление подписано названием подразделения.
+const divTag = () => (listDivisions().length > 1 ? `🏢 <b>${h(getSettings().division_name)}</b>\n` : '');
+const toHeads = (exceptId, text, rows, link) => { const t = divTag() + text; return Promise.all(heads(exceptId).map((u) => send(u.tg_chat_id, t, rows, link))); };
+const toUser = (id, text, rows, link) => send(userChat(id), divTag() + text, rows, link);
 const fire = (p) => { Promise.resolve(p).catch((e) => console.error('Telegram:', e.message)); };
 
 // ---------- тексты уведомлений ----------
@@ -202,17 +205,22 @@ async function finishMessage(chatId, messageId, originalText, suffix) {
 }
 
 async function onCallback(q) {
+  const m = /^h:([a-z0-9]+):([rico]):(\d+)(?::([a-z0-9]+))?$/.exec(String(q.data || ''));
+  const slug = m?.[5] || 'main';
+  if (m && slug !== 'main' && !divisionDb(slug)) return call('answerCallbackQuery', { callback_query_id: q.id, text: 'Подразделение не найдено', show_alert: true }).catch(() => {});
+  return runInDivision(slug, () => onCallbackIn(q, m, slug));
+}
+async function onCallbackIn(q, m, slug) {
   const chatId = q.message?.chat?.id ?? q.from?.id;
   const user = userByChat(chatId);
   const answer = (text, alert = false) => call('answerCallbackQuery', { callback_query_id: q.id, text, show_alert: alert }).catch(() => {});
   if (!user) return answer('Этот Telegram не привязан к БХ Учёт', true);
   if (user.role !== 'head') return answer('Решения принимает руководитель', true);
-  const m = /^h:([a-z0-9]+):([rico]):(\d+)$/.exec(String(q.data || ''));
   if (!m) return answer('Кнопка устарела', true);
   const [, action, entity, idStr] = m; const id = Number(idStr);
   const orig = h(q.message?.text || '');
   if (NEED_REASON[`${action}:${entity}`]) {
-    pendingReason.set(String(chatId), { action, entity, id, until: Date.now() + 10 * 60e3, messageId: q.message?.message_id, orig });
+    pendingReason.set(String(chatId), { action, entity, id, slug, until: Date.now() + 10 * 60e3, messageId: q.message?.message_id, orig });
     await answer('Напишите причину');
     await call('sendMessage', { chat_id: chatId, text: `${NEED_REASON[`${action}:${entity}`]}? Напишите одним сообщением (или /cancel).`, reply_markup: { force_reply: true } }).catch(() => {});
     return;
@@ -233,32 +241,42 @@ async function onMessage(msg) {
   const startCode = /^\/start(?:\s+([a-f0-9]{24}))?$/.exec(text);
   if (startCode) {
     const code = startCode[1];
-    const u = code && db.prepare('SELECT * FROM users WHERE tg_link_code = ? AND tg_link_expires > ? AND active = 1').get(code, Date.now());
+    let u = null; let uSlug = null;
+    if (code) for (const dv of listDivisions()) {
+      const x = divisionDb(dv.slug).prepare('SELECT * FROM users WHERE tg_link_code = ? AND tg_link_expires > ? AND active = 1').get(code, Date.now());
+      if (x) { u = x; uSlug = dv.slug; break; }
+    }
     if (!u) return send(chatId, '👋 Это бот БХ Учёт.\nЧтобы получать уведомления, откройте БХ Учёт → <b>Профиль</b> → <b>Подключить Telegram</b>.');
-    db.prepare('UPDATE users SET tg_chat_id = NULL WHERE tg_chat_id = ?').run(String(chatId));
-    db.prepare('UPDATE users SET tg_chat_id = ?, tg_username = ?, tg_link_code = NULL, tg_link_expires = NULL WHERE id = ?').run(String(chatId), msg.from?.username || '', u.id);
-    logEvent(u.id, 'auth', u.id, 'telegram_linked', { username: msg.from?.username || '' });
+    const chat = String(chatId); const uname = msg.from?.username || '';
+    for (const dv of listDivisions()) {
+      const d = divisionDb(dv.slug);
+      d.prepare('UPDATE users SET tg_chat_id = NULL WHERE tg_chat_id = ?').run(chat);
+      // Руководитель с тем же логином в других подразделениях — тот же человек: подключаем и там.
+      if (dv.slug !== uSlug && u.role === 'head') d.prepare("UPDATE users SET tg_chat_id = ?, tg_username = ? WHERE login = ? AND role = 'head' AND active = 1").run(chat, uname, u.login);
+    }
+    divisionDb(uSlug).prepare('UPDATE users SET tg_chat_id = ?, tg_username = ?, tg_link_code = NULL, tg_link_expires = NULL WHERE id = ?').run(chat, uname, u.id);
+    runInDivision(uSlug, () => logEvent(u.id, 'auth', u.id, 'telegram_linked', { username: uname }));
     return send(chatId, `✅ Готово, ${h(u.name)}! Уведомления БХ Учёт будут приходить сюда.${u.role === 'head' ? '\nНовые заявки, отчёты и доходы можно согласовывать прямо кнопками в сообщении.' : '\nСюда придут решения по вашим заявкам.'}\n\nОтключить: /stop`);
   }
   if (text === '/stop') {
-    const u = userByChat(chatId);
-    if (u) unlink(u.id);
+    for (const dv of listDivisions()) divisionDb(dv.slug).prepare('UPDATE users SET tg_chat_id = NULL, tg_username = NULL WHERE tg_chat_id = ?').run(String(chatId));
     return send(chatId, 'Уведомления отключены. Подключить снова можно в профиле БХ Учёт.');
   }
   if (text === '/cancel') { pendingReason.delete(String(chatId)); return send(chatId, 'Отменено.'); }
   const p = pendingReason.get(String(chatId));
   if (p && p.until > Date.now() && text && !text.startsWith('/')) {
     pendingReason.delete(String(chatId));
-    const user = userByChat(chatId);
-    if (!user || user.role !== 'head') return;
-    try {
-      perform(user, p.action, p.entity, p.id, text.slice(0, 1000));
-      await send(chatId, `${DONE_TEXT[p.action] || 'Готово'}. Причина записана.`);
-      await finishMessage(chatId, p.messageId, p.orig, `${DONE_TEXT[p.action] || 'Готово'} · ${h(user.name)}\n<i>${h(text.slice(0, 300))}</i>`);
-    } catch (e) { await send(chatId, `⚠️ ${h(e.status ? e.message : 'Не получилось, попробуйте в БХ Учёт')}`); }
-    return;
+    return runInDivision(p.slug || 'main', async () => {
+      const user = userByChat(chatId);
+      if (!user || user.role !== 'head') return;
+      try {
+        perform(user, p.action, p.entity, p.id, text.slice(0, 1000));
+        await send(chatId, `${DONE_TEXT[p.action] || 'Готово'}. Причина записана.`);
+        await finishMessage(chatId, p.messageId, p.orig, `${DONE_TEXT[p.action] || 'Готово'} · ${h(user.name)}\n<i>${h(text.slice(0, 300))}</i>`);
+      } catch (e) { await send(chatId, `⚠️ ${h(e.status ? e.message : 'Не получилось, попробуйте в БХ Учёт')}`); }
+    });
   }
-  if (userByChat(chatId)) return send(chatId, 'Я присылаю уведомления и кнопки для решений. Всё остальное — в БХ Учёт.');
+  if (listDivisions().some((dv) => divisionDb(dv.slug).prepare('SELECT id FROM users WHERE tg_chat_id = ? AND active = 1').get(String(chatId)))) return send(chatId, 'Я присылаю уведомления и кнопки для решений. Всё остальное — в БХ Учёт.');
   return send(chatId, '👋 Это бот БХ Учёт. Подключить: БХ Учёт → <b>Профиль</b> → <b>Подключить Telegram</b>.');
 }
 

@@ -4,7 +4,7 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const zlib = require('node:zlib');
-const { db, UPLOAD_DIR, getSettings, setSetting, logEvent, DEFAULT_SETTINGS } = require('./db');
+const { db, mainDb, als, UPLOAD_DIR, getSettings, setSetting, logEvent, DEFAULT_SETTINGS, listDivisions, createDivision, divisionDb, currentDivision, runInDivision } = require('./db');
 const auth = require('./auth');
 const L = require('./logic');
 const A = require('./analytics');
@@ -30,6 +30,15 @@ const SECURITY_HEADERS = {
   'Permissions-Policy': 'geolocation=(), microphone=(), camera=(self)',
   'Content-Security-Policy': "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; script-src 'self'; connect-src 'self'; frame-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
 };
+
+// Подразделения, куда пользователь может переключиться: текущее + те, где есть активный руководитель с тем же логином.
+// Сотрудники видят только своё подразделение — другие для них не существуют.
+function accessibleDivisions(user) {
+  const all = listDivisions();
+  if (!user || user.role !== 'head') return all.filter((d) => d.slug === user?.division);
+  return all.filter((d) => d.slug === user.division
+    || !!divisionDb(d.slug).prepare("SELECT id FROM users WHERE login = ? AND role = 'head' AND active = 1").get(user.login));
+}
 
 // ---------- первый запуск: учётная запись руководителя ----------
 function bootstrap() {
@@ -296,6 +305,7 @@ function updateSettings(head, body) {
     income_categories: body.income_categories && list(body.income_categories, 40),
     objects: body.objects && list(body.objects, 200),
     units: body.units && list(body.units, 30),
+    division_name: body.division_name !== undefined ? (str(body.division_name, 60) || null) : null,
   };
   for (const [k, v] of Object.entries(plan)) {
     if (v == null || (Array.isArray(v) && !v.length)) continue;
@@ -362,7 +372,7 @@ async function api(req, res, url) {
     if (user) { auth.destroySession(user.token); logEvent(user.id, 'auth', user.id, 'logout', {}); }
     return ok({ ok: true }, { 'Set-Cookie': auth.cookie('', 0) });
   }
-  if (p === '/api/me' && m === 'GET') return ok({ user: publicUser(user) });
+  if (p === '/api/me' && m === 'GET') return ok({ user: publicUser(user), division: user ? { slug: currentDivision(), name: getSettings().division_name } : null });
   if (p === '/api/me/password' && m === 'POST') {
     if (!user) throw new HttpError(401, 'Войдите в систему');
     const full = db.prepare('SELECT pass_hash FROM users WHERE id = ?').get(user.id);
@@ -370,14 +380,35 @@ async function api(req, res, url) {
     const problem = auth.passwordProblem(body.next);
     if (problem) throw new HttpError(400, problem);
     if (body.next === body.current) throw new HttpError(400, 'Новый пароль должен отличаться от текущего');
-    db.prepare('UPDATE users SET pass_hash = ?, must_change_pw = 0 WHERE id = ?').run(auth.hashPassword(body.next), user.id);
+    const newHash = auth.hashPassword(body.next);
+    db.prepare('UPDATE users SET pass_hash = ?, must_change_pw = 0 WHERE id = ?').run(newHash, user.id);
+    // Руководитель — один человек во всех своих подразделениях: пароль меняется везде.
+    if (user.role === 'head') for (const dv of accessibleDivisions(user)) {
+      if (dv.slug !== user.division) divisionDb(dv.slug).prepare("UPDATE users SET pass_hash = ?, must_change_pw = 0 WHERE login = ? AND role = 'head'").run(newHash, user.login);
+    }
     auth.destroyUserSessions(user.id, user.token);
     logEvent(user.id, 'auth', user.id, 'password_changed', {});
     return ok();
   }
 
   needUser(user);
-  if (p === '/api/settings' && m === 'GET') { const s = getSettings(); return ok({ ...s, currency: CURRENCY, ai: ai.enabled() }); }
+  if (p === '/api/settings' && m === 'GET') { const s = getSettings(); return ok({ ...s, currency: CURRENCY, ai: ai.enabled(), division: currentDivision() }); }
+
+  // подразделения: руководитель переключается между теми, где у него есть учётная запись руководителя
+  if (p === '/api/divisions' && m === 'GET') return ok({ current: currentDivision(), items: accessibleDivisions(user), can_create: user.role === 'head' });
+  if (p === '/api/divisions/switch' && m === 'POST') {
+    if (user.role !== 'head') throw new HttpError(403, 'Переключаться между подразделениями может только руководитель');
+    const slug = str(body.slug, 40);
+    const target = accessibleDivisions(user).find((d) => d.slug === slug);
+    if (!target) throw new HttpError(404, 'Подразделение не найдено');
+    const tu = divisionDb(slug).prepare("SELECT id FROM users WHERE login = ? AND role = 'head' AND active = 1").get(user.login);
+    if (!tu) throw new HttpError(403, 'В этом подразделении у вас нет доступа руководителя');
+    logEvent(user.id, 'auth', user.id, 'division_left', { to: target.name });
+    auth.switchSession(user.token, slug, tu.id);
+    const fromName = listDivisions().find((d) => d.slug === user.division)?.name || '';
+    runInDivision(slug, () => logEvent(tu.id, 'auth', tu.id, 'division_entered', { from: fromName }));
+    return ok({ division: target });
+  }
   if (p === '/api/home' && m === 'GET') return ok(user.role === 'head' ? headHome(user) : staffHome(user));
 
   // заявки
@@ -481,6 +512,21 @@ async function api(req, res, url) {
     if ((mt = p.match(/^\/api\/head\/users\/(\d+)$/)) && m === 'PUT') { updateUser(user, mt[1], body); return ok(); }
     if ((mt = p.match(/^\/api\/head\/users\/(\d+)\/reset$/)) && m === 'POST') return ok(resetPassword(user, mt[1]));
     if (p === '/api/head/settings' && m === 'PUT') return ok(updateSettings(user, body));
+    if (p === '/api/head/divisions' && m === 'POST') {
+      const name = str(body.name, 60);
+      if (name.length < 2) throw new HttpError(400, 'Напишите название подразделения');
+      if (listDivisions().some((d) => d.name.toLowerCase() === name.toLowerCase())) throw new HttpError(409, 'Подразделение с таким названием уже есть');
+      const me = db.prepare('SELECT * FROM users WHERE id = ?').get(user.id);
+      const slug = createDivision(name, user.id);
+      // В новом подразделении создаём руководителя с тем же логином и паролем — чтобы переключаться без входа.
+      runInDivision(slug, () => {
+        db.prepare('INSERT INTO users (login, name, position, phone, role, pass_hash, must_change_pw, created_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?)')
+          .run(me.login, me.name, me.position, me.phone, 'head', me.pass_hash, Date.now());
+        logEvent(null, 'settings', null, 'division_created', { name, by: me.name });
+      });
+      logEvent(user.id, 'settings', null, 'division_created', { name });
+      return ok({ slug, name });
+    }
 
     if ((mt = p.match(/^\/api\/head\/cash\/(\d+)\/void$/)) && m === 'POST') { cash.removeOp(user, mt[1], body.reason); return ok({ balance: L.cashBalance() }); }
     if (p === '/api/head/export' && m === 'GET') {
@@ -517,7 +563,8 @@ function createServer() {
     const url = new URL(req.url, 'http://localhost');
     if (!url.pathname.startsWith('/api/')) return serveStatic(req, res, url);
     try {
-      await api(req, res, url);
+      // Каждый запрос начинается в основном подразделении; после проверки сессии — переключается на своё.
+      await als.run({ db: mainDb, division: 'main' }, () => api(req, res, url));
     } catch (e) {
       const status = e.status || 500;
       if (status === 500) console.error(e);

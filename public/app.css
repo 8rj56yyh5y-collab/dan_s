@@ -419,3 +419,13 @@ textarea.input { min-height: 84px; }
 .detail .t td:first-child { min-width: 150px; }
 .detail .t th, .detail .t td { padding-left: 10px; padding-right: 10px; }
 @media (max-width: 860px) { .rstep { flex-wrap: wrap; } .rstep > .btn { margin-left: 38px; } .r-total { max-width: 100%; } }
+
+/* переключатель подразделений */
+.brand-switch { background: none; border: 0; cursor: pointer; text-align: left; width: 100%; border-radius: 12px; color: inherit; font: inherit; }
+.brand-switch:hover { background: var(--nav-on); }
+.brand-switch > .i:last-child { margin-left: auto; color: var(--muted); }
+.top .brand-switch { width: auto; padding: 4px 8px 4px 4px; }
+.div-li:disabled { cursor: default; opacity: 1; }
+.div-li:not(:disabled):hover { background: var(--surface-2) !important; }
+.brand > span:nth-child(2) { min-width: 0; }
+.brand > span:last-child > span, .brand-switch > span:nth-child(2) > span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

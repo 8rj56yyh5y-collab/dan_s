@@ -127,7 +127,7 @@
     const theme = document.documentElement.dataset.theme;
     return `<div class="shell">
       <aside class="side">
-        <a class="brand" href="#/"><span class="brand-mark">БХ</span><span><b>БХ Учёт</b><span>${isHead() ? 'Кабинет руководителя' : 'Кабинет сотрудника'}</span></span></a>
+        ${isHead() ? `<button class="brand brand-switch" data-divs title="Сменить подразделение">` : '<a class="brand" href="#/">'}<span class="brand-mark">${esc(divMark())}</span><span><b>${esc(divName())}</b><span>${isHead() ? 'Кабинет руководителя' : 'Кабинет сотрудника'}</span></span>${isHead() ? `${ic('chevronDown', 16)}</button>` : '</a>'}
         <a class="btn hl" href="#/new">${ic('plus', 18)} Новая заявка</a>
         <nav class="nav">${nav}</nav>
         <div class="side-foot">
@@ -135,7 +135,7 @@
           <a class="me" href="#/profile"><span class="avatar">${esc(initials(S.me.name))}</span><span style="min-width:0"><b>${esc(S.me.name)}</b><span>${esc(S.me.position || (isHead() ? 'Руководитель' : 'Сотрудник'))}</span></span></a>
         </div>
       </aside>
-      <header class="top"><a class="brand" href="#/"><span class="brand-mark">БХ</span><span><b>БХ Учёт</b></span></a>
+      <header class="top">${isHead() ? '<button class="brand brand-switch" data-divs>' : '<a class="brand" href="#/">'}<span class="brand-mark">${esc(divMark())}</span><span><b>${esc(divName())}</b></span>${isHead() ? `${ic('chevronDown', 16)}</button>` : '</a>'}
         <div class="row"><a class="icon-btn" href="#/new" aria-label="Новая заявка">${ic('plus', 20)}</a><a class="icon-btn" href="#/profile" aria-label="Профиль">${ic('user', 20)}</a></div></header>
       <main class="main" id="main">${content}</main>
       <nav class="tabbar">${tabs}</nav>
@@ -167,13 +167,14 @@
     $('#tip').style.display = 'none';
     const root = $('#root');
     if (!S.me) {
-      try { S.me = (await api('/api/me')).user; } catch { S.me = null; }
+      try { const me = await api('/api/me'); S.me = me.user; S.division = me.division; } catch { S.me = null; }
     }
     if (!S.me) return pageLogin(root);
     if (S.me.must_change_pw) return pageForcePassword(root);
     if (!S.settings) {
       try { [S.settings, S.meta] = await Promise.all([api('/api/settings'), api('/api/meta')]); } catch (e) { return fail(e); }
     }
+    document.title = `${divName()} · Учёт`;
     const r = route();
     const pages = {
       '': isHead() ? pageHeadHome : pageStaffHome,
@@ -244,7 +245,7 @@
       const f = e.target; const btn = $('button', f); btn.disabled = true;
       try {
         const r = await post('/api/login', { login: f.login.value.trim(), password: f.password.value });
-        S.me = r.user; S.settings = null;
+        S.me = null; S.settings = null;
         go('#/');
       } catch (err) { fail(err); } finally { btn.disabled = false; }
     };
@@ -268,6 +269,35 @@
     };
     $('#lo').onclick = logout;
   }
+  // ---- подразделения ----
+  const divName = () => (S.division && S.division.name) || 'БХ';
+  const divMark = () => { const w = divName().split(/\s+/).filter(Boolean); return (w.length > 1 ? w[0][0] + w[1][0] : divName().slice(0, 2)).toUpperCase(); };
+  async function switchDivision(slug) {
+    try { await post('/api/divisions/switch', { slug }); S.me = null; S.settings = null; S.division = null; location.hash = '#/'; render(); toast('Подразделение переключено'); } catch (e) { fail(e); }
+  }
+  async function divisionsDialog() {
+    let d; try { d = await api('/api/divisions'); } catch (e) { return fail(e); }
+    const rows = d.items.map((x) => `<button class="li div-li" data-div="${esc(x.slug)}" ${x.slug === d.current ? 'disabled' : ''} style="width:100%;text-align:left;background:none;border:0;border-bottom:1px solid var(--line);cursor:pointer">
+      <div class="t1 row" style="gap:10px;flex-wrap:nowrap"><span class="brand-mark" style="width:30px;height:30px;font-size:.75rem;border-radius:8px">${esc(((x.name.split(/\s+/)[1] ? x.name.split(/\s+/)[0][0] + x.name.split(/\s+/)[1][0] : x.name.slice(0, 2))).toUpperCase())}</span>${esc(x.name)}</div>
+      <div>${x.slug === d.current ? '<span class="tag">сейчас</span>' : ic('chevronRight')}</div></button>`).join('');
+    modal(`<div class="row between"><h2>Подразделения</h2><button class="icon-btn" data-close>${ic('x')}</button></div>
+      <p class="muted small" style="margin:0">У каждого подразделения своя касса, заявки, доходы и сотрудники. Сотрудники видят только своё подразделение.</p>
+      <div class="card flush"><div class="list">${rows}</div></div>
+      ${d.can_create ? `<button class="btn soft" id="div-new">${ic('plus', 16)} Новое подразделение</button>` : ''}`, {
+      onOpen: (box, close) => {
+        $$('[data-div]', box).forEach((b) => b.onclick = () => { close(); switchDivision(b.dataset.div); });
+        if ($('#div-new', box)) $('#div-new', box).onclick = async () => {
+          close();
+          const r = await ask({ title: 'Новое подразделение', text: 'Появится отдельная система учёта: своя касса, заявки, доходы и сотрудники. Вы будете в ней руководителем с тем же логином и паролем.',
+            fields: [{ name: 'name', label: 'Название', type: 'text', required: true, placeholder: 'Например: Офис Днепр' }], ok: 'Создать' });
+          if (!r) return;
+          try { const c = await post('/api/head/divisions', r); toast(`Подразделение «${c.name}» создано`); switchDivision(c.slug); } catch (e) { fail(e); }
+        };
+      },
+    });
+  }
+  document.addEventListener('click', (e) => { if (e.target.closest('[data-divs]')) divisionsDialog(); });
+
   async function logout() { try { await post('/api/logout'); } catch { /* всё равно выходим */ } S.me = null; S.settings = null; go('#/login'); }
 
   // ================= Компоненты =================
@@ -314,6 +344,7 @@
   const monthName = (m) => { const [y, mm] = m.split('-'); return `${MONTHS[Number(mm) - 1]} ${y.slice(2)}`; };
   const barPath = (x, y, w, h, r = 4) => { if (h <= 0) return ''; r = Math.min(r, h, w / 2); return `M${x},${y + h}V${y + r}Q${x},${y} ${x + r},${y}H${x + w - r}Q${x + w},${y} ${x + w},${y + r}V${y + h}Z`; };
   function monthlyChart(rows, W = 760, H = 260) {
+    if (!rows.some((r) => r.income || r.expenses)) return `<div class="empty small">${ic('chart', 28)}Данных пока нет — график появится после первых доходов и проведённых заявок</div>`;
     const L = 46; const B = 26; const T = 10; const pw = W - L - 6; const ph = H - B - T;
     const max = Math.max(1, ...rows.map((r) => Math.max(r.income, r.expenses)));
     const step = Math.pow(10, Math.floor(Math.log10(max))); const nice = Math.ceil(max / step / 2) * step * 2 / 4 || 1;
@@ -724,7 +755,7 @@
     closed: ['Проведено', 'check', 'hl'], cancelled: ['Отменено', 'xCircle', 'bad'], comment: ['Комментарий', 'chat', ''], file_added: ['Добавлен файл', 'upload', ''],
     file_removed: ['Файл убран', 'trash', 'warn'], correction_requested: ['Запрос на корректировку', 'unlock', 'warn'], correction_approved: ['Корректировка разрешена', 'unlock', 'hl'],
     correction_rejected: ['В корректировке отказано', 'lock', 'bad'], ai_receipt: ['Чек распознан ИИ', 'sparkles', ''], delivery_added: ['Добавлена доставка', 'truck', 'hl'], opening_requested: ['Начальный остаток: заявка', 'wallet', 'warn'], opening_approved: ['Начальный остаток подтверждён', 'wallet', 'hl'],
-    opening_rejected: ['Начальный остаток отклонён', 'wallet', 'bad'], opening_issued: ['Начальный остаток на руках', 'wallet', 'hl'], opening_retargeted: ['Остаток: изменено, куда зачислить', 'wallet', 'warn'], opening_moved_to_cash: ['Остаток перенесён в кассу', 'wallet', 'hl'], report_by_head: ['Руководитель внёс цены по чеку', 'receipt', 'warn'], paid_from_set: ['Указано, чем оплачено', 'wallet', ''],
+    opening_rejected: ['Начальный остаток отклонён', 'wallet', 'bad'], opening_issued: ['Начальный остаток на руках', 'wallet', 'hl'], opening_retargeted: ['Остаток: изменено, куда зачислить', 'wallet', 'warn'], opening_moved_to_cash: ['Остаток перенесён в кассу', 'wallet', 'hl'], report_by_head: ['Руководитель внёс цены по чеку', 'receipt', 'warn'], paid_from_set: ['Указано, чем оплачено', 'wallet', ''], division_created: ['Создано подразделение', 'building', 'hl'], division_entered: ['Переход в подразделение', 'building', ''], division_left: ['Переход в другое подразделение', 'building', ''],
     telegram_linked: ['Подключён Telegram', 'send', 'hl'], telegram_unlinked: ['Отключён Telegram', 'send', ''], cash_topup: ['Касса: пополнение', 'wallet', 'hl'], cash_expense: ['Касса: расход', 'wallet', 'warn'],
     cash_withdraw: ['Касса: сдано', 'wallet', ''], cash_recount: ['Касса: пересчёт', 'scale', 'warn'], cash_recount_ok: ['Касса: пересчёт сошёлся', 'scale', 'hl'], cash_voided: ['Касса: операция отменена', 'wallet', 'bad'], delivery_removed: ['Доставка удалена', 'truck', 'warn'], confirmed: ['Подтверждено', 'checkCircle', 'hl'],
     login: ['Вход в систему', 'user', ''], login_failed: ['Неудачный вход', 'alert', 'bad'], logout: ['Выход', 'logout', ''], password_changed: ['Сменён пароль', 'lock', ''],
@@ -1395,6 +1426,9 @@
     const ta = (name, label, hint) => `<label class="field"><span>${label}</span><textarea class="input" name="${name}" rows="6">${esc((s[name] || []).join('\n'))}</textarea><small class="hint">${hint}</small></label>`;
     return `${head('Настройки', 'Правила проверок и справочники. Любое изменение записывается в журнал.')}
       <form id="sf" class="stack">
+        <div class="card stack"><h3 style="margin:0">Подразделение</h3><div class="form-grid">
+          <label class="field"><span>Название</span><input class="input" name="division_name" value="${esc(s.division_name || divName())}" maxlength="60"><small class="hint">Показывается в меню и в уведомлениях Telegram</small></label>
+          <div class="field"><span>Другие подразделения</span><button type="button" class="btn soft" data-divs>${ic('building', 16)} Переключить или создать</button></div></div></div>
         <div class="card stack"><h3 style="margin:0">Правила</h3><div class="form-grid">
           <label class="field"><span>Окно самостоятельной правки, часов</span><input class="input" name="edit_hours" inputmode="decimal" value="${esc(s.edit_hours)}"><small class="hint">После — только через запрос на корректировку</small></label>
           <label class="field"><span>Цена выше обычной на, %</span><input class="input" name="price_alert_pct" inputmode="decimal" value="${esc(s.price_alert_pct)}"><small class="hint">Порог подсветки в «Контроле»</small></label>
@@ -1416,7 +1450,9 @@
       const lines = (n) => f[n].value.split('\n').map((x) => x.trim()).filter(Boolean);
       try {
         const s = await put('/api/head/settings', { edit_hours: f.edit_hours.value.replace(',', '.'), price_alert_pct: f.price_alert_pct.value, overspend_alert_pct: f.overspend_alert_pct.value,
-          objects: lines('objects'), categories: lines('categories'), income_categories: lines('income_categories'), units: lines('units') });
+          objects: lines('objects'), categories: lines('categories'), income_categories: lines('income_categories'), units: lines('units'), division_name: f.division_name.value });
+        if (S.division) S.division.name = s.division_name; document.title = `${s.division_name} · Учёт`;
+        $('.shell').querySelectorAll('.brand b').forEach((b) => { b.textContent = s.division_name; });
         S.settings = { ...S.settings, ...s }; toast('Настройки сохранены');
       } catch (err) { fail(err); }
     };
