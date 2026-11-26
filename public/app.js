@@ -114,16 +114,22 @@
   const TAB_STAFF = [['/', 'home', 'Главная'], ['/requests', 'list', 'Заявки', 'todo'], ['/new', 'plus', 'Заявка', null, true], ['/incomes', 'coins', 'Доходы'], ['/profile', 'user', 'Профиль']];
   const NAV_CASHIER = [['/', 'home', 'Главная'], ['/requests', 'list', 'Мои заявки', 'todo'], ['/cash', 'wallet', 'Касса', 'cash'], ['/incomes', 'coins', 'Доходы'], ['sep'], ['/profile', 'user', 'Профиль']];
   const TAB_CASHIER = [['/', 'home', 'Главная'], ['/requests', 'list', 'Заявки', 'todo'], ['/new', 'plus', 'Заявка', null, true], ['/cash', 'wallet', 'Касса', 'cash'], ['/incomes', 'coins', 'Доходы']];
-  const canCash = () => isHead() || !!(S.me && S.me.cashier);
+  // Опции подразделения: выключенные разделы скрываются (сервер их тоже не пускает).
+  const so = (k) => !S.settings || S.settings[k] !== false;
+  const objL = () => (S.settings && S.settings.label_object) || 'Объект';
+  const NAV_MOD = { '/incomes': 'mod_incomes', '/new-income': 'mod_incomes', '/cash': 'mod_cash', '/control': 'mod_control' };
+  const navOk = ([p]) => !NAV_MOD[p] || so(NAV_MOD[p]);
+  const canCash = () => so('mod_cash') && (isHead() || !!(S.me && S.me.cashier));
   S.badges = {};
 
   function shell(content) {
     const r = route();
     const active = (p) => (p === '/' ? r.path === '/' : r.path.startsWith(p));
     const badge = (k) => (k && S.badges[k] ? `<span class="badge${k === 'flags' ? ' red' : ''}">${S.badges[k]}</span>` : '');
-    const nav = (isHead() ? NAV_HEAD : S.me.cashier ? NAV_CASHIER : NAV_STAFF).map(([p, i, t, b]) => (p === 'sep' ? '<div class="nav-sep"></div>'
+    const nav = (isHead() ? NAV_HEAD : S.me.cashier ? NAV_CASHIER : NAV_STAFF).filter(navOk).map(([p, i, t, b]) => (p === 'sep' ? '<div class="nav-sep"></div>'
       : `<a href="#${p}" class="${active(p) ? 'on' : ''}">${ic(i, 19)}<span>${t}</span>${badge(b)}</a>`)).join('');
-    const tabs = (isHead() ? TAB_HEAD : S.me.cashier ? TAB_CASHIER : TAB_STAFF).map(([p, i, t, b, plus]) => `<a href="#${p}" class="${plus ? 'plus' : ''} ${!plus && active(p) ? 'on' : ''}">${plus ? `<span class="pl">${ic(i, 24)}</span>` : ic(i, 22)}<span>${t}</span>${badge(b)}</a>`).join('');
+    const tabList = (isHead() ? TAB_HEAD : S.me.cashier ? TAB_CASHIER : TAB_STAFF).filter(navOk);
+    const tabs = tabList.map(([p, i, t, b, plus]) => `<a href="#${p}" class="${plus ? 'plus' : ''} ${!plus && active(p) ? 'on' : ''}">${plus ? `<span class="pl">${ic(i, 24)}</span>` : ic(i, 22)}<span>${t}</span>${badge(b)}</a>`).join('');
     const theme = document.documentElement.dataset.theme;
     return `<div class="shell">
       <aside class="side">
@@ -138,7 +144,7 @@
       <header class="top">${isHead() ? '<button class="brand brand-switch" data-divs>' : '<a class="brand" href="#/">'}<span class="brand-mark">${esc(divMark())}</span><span><b>${esc(divName())}</b></span>${isHead() ? `${ic('chevronDown', 16)}</button>` : '</a>'}
         <div class="row"><a class="icon-btn" href="#/new" aria-label="Новая заявка">${ic('plus', 20)}</a><a class="icon-btn" href="#/profile" aria-label="Профиль">${ic('user', 20)}</a></div></header>
       <main class="main" id="main">${content}</main>
-      <nav class="tabbar">${tabs}</nav>
+      <nav class="tabbar" style="grid-template-columns:repeat(${tabList.length},1fr)">${tabs}</nav>
     </div>`;
   }
   const themeButtons = (theme) => [['light', 'sun', 'Белая'], ['dark', 'moon', 'Чёрная']].map(([t, i, n]) => `<button data-theme-set="${t}" class="${theme === t ? 'on' : ''}">${ic(i, 15)} ${n}</button>`).join('');
@@ -289,9 +295,10 @@
         if ($('#div-new', box)) $('#div-new', box).onclick = async () => {
           close();
           const r = await ask({ title: 'Новое подразделение', text: 'Появится отдельная система учёта: своя касса, заявки, доходы и сотрудники. Вы будете в ней руководителем с тем же логином и паролем.',
-            fields: [{ name: 'name', label: 'Название', type: 'text', required: true, placeholder: 'Например: Офис Днепр' }], ok: 'Создать' });
+            fields: [{ name: 'name', label: 'Название', type: 'text', required: true, placeholder: 'Например: Офис Днепр' },
+              { name: 'copy', label: 'Начальные настройки', type: 'select', value: '1', options: [['1', `Скопировать из «${divName()}» (опции, категории, объекты)`], ['0', 'Стандартные, как в БХ']] }], ok: 'Создать' });
           if (!r) return;
-          try { const c = await post('/api/head/divisions', r); toast(`Подразделение «${c.name}» создано`); switchDivision(c.slug); } catch (e) { fail(e); }
+          try { const c = await post('/api/head/divisions', { name: r.name, copy_settings: r.copy === '1' }); toast(`Подразделение «${c.name}» создано`); switchDivision(c.slug); } catch (e) { fail(e); }
         };
       },
     });
@@ -386,7 +393,7 @@
   async function pageStaffHome() {
     const h = await api('/api/home');
     const adv = h.advance.balance;
-    return `${head(`Здравствуйте, ${esc(S.me.name.split(' ')[0])}`, 'Ваши заявки, отчёты и деньги под отчёт', `<a class="btn" href="#/new">${ic('plus')} Новая заявка</a><a class="btn soft" href="#/new-income">${ic('coins')} Внести доход</a><button class="btn soft" data-opening>${ic('wallet')} Начальный остаток</button>`)}
+    return `${head(`Здравствуйте, ${esc(S.me.name.split(' ')[0])}`, 'Ваши заявки, отчёты и деньги под отчёт', `<a class="btn" href="#/new">${ic('plus')} Новая заявка</a>${so('mod_incomes') ? `<a class="btn soft" href="#/new-income">${ic('coins')} Внести доход</a>` : ''}${so('mod_cash') || so('mod_money') ? `<button class="btn soft" data-opening>${ic('wallet')} Начальный остаток</button>` : ''}`)}
       <div class="grid-kpi">
         ${h.cash_balance != null ? cashTile(h.cash_balance, h.openings.filter((x) => x.status === 'pending' && x.target === 'cash')) : ''}
         ${kpi('Нужно сделать', h.todo.length, h.todo.length ? 'отчёт, покупка или доработка' : 'всё сделано', h.todo.length ? 'hl' : '')}
@@ -416,7 +423,7 @@
     const inc = h.incomes.map((i) => `<a class="li" href="#/income/${i.id}"><div class="t1">${esc(i.title)}</div><div class="amt up">+${money(i.amount)}</div><div class="t2"><span>${esc(i.number)}</span><span>${esc(i.date)}</span><span>· ${esc(i.user_name)}</span></div></a>`);
     return `${head('Обзор', `Текущий месяц · ${dOnly(Date.parse(o.range.from))} — ${dOnly(Date.parse(o.range.to))}`, `<a class="btn soft" href="#/analytics">${ic('chart')} Аналитика</a>`)}
       <div class="grid-kpi">
-        ${cashTile(o.cash_balance, h.openings.filter((x) => x.target === 'cash'))}
+        ${so('mod_cash') ? cashTile(o.cash_balance, h.openings.filter((x) => x.target === 'cash')) : ''}
         ${kpi('Доходы', money(c.income), delta(c.income, p.income), '', 'var(--c-in)')}
         ${kpi('Расходы', money(c.expenses), delta(c.expenses, p.expenses, true), '', 'var(--c-out)')}
         ${kpi('Прибыль', money(c.profit), c.income ? `рентабельность ${nf((c.profit / c.income) * 100, 1)}%` : 'доходов пока нет', 'ink')}
@@ -427,11 +434,11 @@
         ${listCard(`<h3>Отчёты на проверку <span class="faint">${h.to_close.length}</span></h3>`, h.to_close.map((r) => reqLi(r)), 'Отчётов на проверке нет', '<a class="link small" href="#/requests?status=review">Все</a>')}
         ${opn.length ? listCard(`<h3>Начальный остаток на подтверждение <span class="faint">${opn.length}</span></h3>`, opn, '') : ''}
         ${corr.length ? listCard(`<h3>Запросы на корректировку <span class="faint">${corr.length}</span></h3>`, corr, '') : ''}
-        ${listCard(`<h3>Доходы на подтверждение <span class="faint">${inc.length}</span></h3>`, inc, 'Новых доходов нет', '<a class="link small" href="#/incomes?status=new">Все</a>')}
+        ${so('mod_incomes') ? listCard(`<h3>Доходы на подтверждение <span class="faint">${inc.length}</span></h3>`, inc, 'Новых доходов нет', '<a class="link small" href="#/incomes?status=new">Все</a>') : ''}
       </div>
       <div class="grid-2" style="margin-top:16px">
         <div class="card"><div class="card-h"><h3>Доходы и расходы за 12 месяцев</h3><a class="link small" href="#/analytics">Подробнее</a></div>${monthlyChart(o.monthly, 540, 240)}</div>
-        <div class="card"><a class="money-line" href="#/cash" style="margin:-4px 0 14px;border-bottom:1px solid var(--line);padding-bottom:14px"><span><span class="muted small">В кассе сейчас</span></span><b style="font-size:1.4rem">${money(o.cash_balance)}</b></a>
+        <div class="card">${so('mod_cash') ? `<a class="money-line" href="#/cash" style="margin:-4px 0 14px;border-bottom:1px solid var(--line);padding-bottom:14px"><span><span class="muted small">В кассе сейчас</span></span><b style="font-size:1.4rem">${money(o.cash_balance)}</b></a>` : ''}
           <div class="card-h"><h3>Деньги под отчётом</h3><span class="faint small">выдано, но не отчитано</span></div>
           ${adv.length ? `<table class="t"><tbody>${adv.map((a) => `<tr><td>${esc(a.name)}</td><td class="faint">${a.open_count ? `${a.open_count} заявк. без отчёта` : 'не вернул остаток'}</td><td class="r num"><b>${money(a.balance)}</b></td></tr>`).join('')}</tbody></table>` : '<div class="empty small">Все выданные деньги отчитаны</div>'}
           <div class="card-h" style="margin:18px 0 10px"><h3>В работе</h3></div>
@@ -476,7 +483,7 @@
       <form class="filters" id="rf">
         <input class="input" name="q" placeholder="Поиск: номер, товар, назначение" value="${esc(q.q || '')}">
         <select class="input" name="kind"><option value="">Все типы</option><option value="purchase" ${q.kind === 'purchase' ? 'selected' : ''}>Покупка</option><option value="money" ${q.kind === 'money' ? 'selected' : ''}>Деньги под отчёт</option></select>
-        <select class="input" name="object"><option value="">Все объекты</option>${S.settings.objects.map((o) => `<option ${q.object === o ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select>
+        <select class="input" name="object" ${so('use_objects') ? '' : 'hidden'}><option value="">${esc(objL())}: все</option>${S.settings.objects.map((o) => `<option ${q.object === o ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select>
         ${isHead() ? `<select class="input" name="user"><option value="">Все сотрудники</option>${users.map((u) => `<option value="${u.id}" ${String(q.user) === String(u.id) ? 'selected' : ''}>${esc(u.name)}</option>`).join('')}</select>` : ''}
         <input class="input" type="date" name="from" value="${esc(q.from || '')}" style="flex:0 1 160px" aria-label="С"><input class="input" type="date" name="to" value="${esc(q.to || '')}" style="flex:0 1 160px" aria-label="По">
       </form>
@@ -513,13 +520,13 @@
     return `<form id="nf" class="stack" novalidate>
       ${r ? '' : `<div class="choice">
         <label><input type="radio" name="kind" value="purchase" ${kind === 'purchase' ? 'checked' : ''}><span><b>${ic('bag', 18)} Покупка материалов</b><small>Список товаров с ценами и ссылками. Оплата по ссылке или в магазине.</small></span></label>
-        <label><input type="radio" name="kind" value="money" ${kind === 'money' ? 'checked' : ''}><span><b>${ic('wallet', 18)} Деньги под отчёт</b><small>Запросить сумму наличными/на карту. Потом — отчёт с чеками.</small></span></label>
+        <label ${so('mod_money') ? '' : 'hidden'}><input type="radio" name="kind" value="money" ${kind === 'money' ? 'checked' : ''}><span><b>${ic('wallet', 18)} Деньги под отчёт</b><small>Запросить сумму наличными/на карту. Потом — отчёт с чеками.</small></span></label>
       </div>`}
       <div class="card stack">
         <div class="form-grid">
           <label class="field" style="grid-column:1/-1"><span>Что покупаем / на что деньги</span><input class="input" name="title" value="${esc(r?.title || '')}" placeholder="Коротко: «Металл на навес для склада»" maxlength="160" required></label>
-          <label class="field"><span>Объект / заказ</span><select class="input" name="object"><option value="">— не выбран —</option>${s.objects.map((o) => `<option ${r?.object === o ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select></label>
-          <label class="field"><span>Категория</span><select class="input" name="category"><option value="">— не выбрана —</option>${s.categories.map((o) => `<option ${r?.category === o ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select></label>
+          <label class="field" ${so('use_objects') ? '' : 'hidden'}><span>${esc(objL())}${s.require_object ? ' *' : ''}</span><select class="input" name="object"><option value="">— не выбран —</option>${s.objects.map((o) => `<option ${r?.object === o ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select></label>
+          <label class="field"><span>Категория${s.require_category ? ' *' : ''}</span><select class="input" name="category"><option value="">— не выбрана —</option>${s.categories.map((o) => `<option ${r?.category === o ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select></label>
           <label class="field"><span>Нужно к дате</span><input class="input" type="date" name="needed_by" value="${esc(r?.needed_by || '')}" min="${today()}"></label>
         </div>
         <label class="field"><span>Зачем / подробности ${kind === 'money' ? '(обязательно)' : ''}</span><textarea class="input" name="purpose" placeholder="Для чего, почему именно этот товар или сумма">${esc(r?.purpose || '')}</textarea></label>
@@ -649,7 +656,7 @@
     }
     const files = x.files.map((f) => fileCard(f, mine && (x.can_edit_report || x.can_edit_plan || ['pending', 'revision'].includes(x.status)))).join('');
     const canUpload = mine && (x.can_edit_report || ['pending', 'revision', 'approved'].includes(x.status));
-    const flags = isHead() && x.flags?.length ? `<div class="card stack"><h3 style="margin:0">${ic('shield', 18)} Проверка</h3>${x.flags.map((f) => `<div class="flag ${f.level}">${ic(f.level === 'low' ? 'info' : 'alert', 16)}<span>${esc(f.text)}</span></div>`).join('')}</div>`
+    const flags = !so('mod_control') ? '' : isHead() && x.flags?.length ? `<div class="card stack"><h3 style="margin:0">${ic('shield', 18)} Проверка</h3>${x.flags.map((f) => `<div class="flag ${f.level}">${ic(f.level === 'low' ? 'info' : 'alert', 16)}<span>${esc(f.text)}</span></div>`).join('')}</div>`
       : isHead() ? `<div class="note ok">${ic('checkCircle')}<span>Автопроверка: замечаний нет — цены в норме, чек на месте.</span></div>` : '';
     const comment = x.head_comment ? `<div class="note ${['revision', 'report_revision', 'rejected'].includes(x.status) ? 'warn' : ''}">${ic('chat')}<span><b>Руководитель:</b> ${esc(x.head_comment)}</span></div>` : '';
     return `${head(esc(x.title), `${esc(x.number)} · ${kindText(x)} · ${esc(x.user_name)} · ${dt(x.created_at)}`, `${pill(x.status, x.status_text)}<button class="btn soft sm no-print" id="print">${ic('printer', 16)} Печать</button>`, `<a href="#/requests">Заявки</a> / ${esc(x.number)}`)}
@@ -669,7 +676,7 @@
               <input type="file" id="file-in" accept="image/*,application/pdf" multiple hidden></label>` : ''}
             <div id="ai-out"></div>
           </div>
-          ${deliveryCard(x)}
+          ${so('mod_delivery') ? deliveryCard(x) : ''}
           <div class="card"><h3>История</h3>${timeline(x.events)}</div>
         </div>
         <div class="aside">
@@ -687,7 +694,7 @@
           ${flags}
           <div class="card"><dl class="kv">
             <dt>Сотрудник</dt><dd>${esc(x.user_name)}</dd>
-            ${x.object ? `<dt>Объект</dt><dd>${esc(x.object)}</dd>` : ''}${x.category ? `<dt>Категория</dt><dd>${esc(x.category)}</dd>` : ''}
+            ${x.object ? `<dt>${esc(objL())}</dt><dd>${esc(x.object)}</dd>` : ''}${x.category ? `<dt>Категория</dt><dd>${esc(x.category)}</dd>` : ''}
             ${x.needed_by ? `<dt>Нужно к</dt><dd>${dOnly(Date.parse(x.needed_by))}</dd>` : ''}
             <dt>Создана</dt><dd>${dt(x.created_at)}</dd>
             ${x.decided_at ? `<dt>Решение</dt><dd>${dt(x.decided_at)} · ${esc(x.decided_by_name)}</dd>` : ''}
@@ -1150,7 +1157,7 @@
       if (!r) return; body = { ...body, ...r };
     } else if (action === 'issue') {
       const r = await ask({ title: 'Выдать деньги', fields: [{ name: 'issued_amount', label: `Выдано, ${cur()}`, type: 'money', value: x.approved_amount ?? x.amount },
-        { name: 'from_cash', label: 'Откуда', type: 'select', value: '1', options: [['1', 'Из кассы БХ (наличные)'], ['0', 'Не из кассы (перевод на карту и т. п.)']] },
+        ...(so('mod_cash') ? [{ name: 'from_cash', label: 'Откуда', type: 'select', value: '1', options: [['1', 'Из кассы (наличные)'], ['0', 'Не из кассы (перевод на карту и т. п.)']] }] : []),
         { name: 'comment', label: 'Комментарий (необязательно)', type: 'text' }], ok: 'Отметить выдачу' });
       if (!r) return; body = { ...body, ...r, from_cash: r.from_cash === '1' };
     } else if (action === 'close') {
@@ -1205,8 +1212,8 @@
         <label class="field"><span>Дата</span><input class="input" type="date" name="date" value="${esc(i?.date || today())}" max="${today()}"></label>
         <label class="field"><span>Способ оплаты</span><select class="input" name="method">${Object.entries(METHOD).map(([k, v]) => `<option value="${k}" ${(i?.method || 'account') === k ? 'selected' : ''}>${v}</option>`).join('')}</select></label>
         <label class="field"><span>Клиент</span><input class="input" name="client" value="${esc(i?.client || '')}" placeholder="Кто заплатил"></label>
-        <label class="field"><span>Объект / заказ</span><select class="input" name="object"><option value="">— не выбран —</option>${s.objects.map((o) => `<option ${i?.object === o ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select></label>
-        <label class="field"><span>Категория</span><select class="input" name="category"><option value="">— не выбрана —</option>${s.income_categories.map((o) => `<option ${i?.category === o ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select></label>
+        <label class="field" ${so('use_objects') ? '' : 'hidden'}><span>${esc(objL())}${s.require_object ? ' *' : ''}</span><select class="input" name="object"><option value="">— не выбран —</option>${s.objects.map((o) => `<option ${i?.object === o ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select></label>
+        <label class="field"><span>Категория${s.require_category ? ' *' : ''}</span><select class="input" name="category"><option value="">— не выбрана —</option>${s.income_categories.map((o) => `<option ${i?.category === o ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select></label>
       </div>
       <label class="field"><span>Комментарий</span><textarea class="input" name="comment">${esc(i?.comment || '')}</textarea></label>
       <div class="row" style="justify-content:flex-end"><a class="btn soft" href="${i ? `#/income/${i.id}` : '#/incomes'}">Отмена</a><button class="btn lg">${i ? 'Сохранить' : 'Внести доход'}</button></div>
@@ -1244,7 +1251,7 @@
       <div class="detail"><div class="stack">
         ${i.head_comment ? `<div class="note ${i.status === 'rejected' ? 'warn' : ''}">${ic('chat')}<span><b>Руководитель:</b> ${esc(i.head_comment)}</span></div>` : ''}
         <div class="card"><div class="money-line"><span class="muted">Сумма</span><b class="up" style="font-size:1.6rem">+${money(i.amount)}</b></div>
-          <dl class="kv" style="margin-top:10px"><dt>Дата</dt><dd>${esc(i.date)}</dd><dt>Оплата</dt><dd>${METHOD[i.method]}</dd>${i.client ? `<dt>Клиент</dt><dd>${esc(i.client)}</dd>` : ''}${i.object ? `<dt>Объект</dt><dd>${esc(i.object)}</dd>` : ''}${i.category ? `<dt>Категория</dt><dd>${esc(i.category)}</dd>` : ''}</dl>
+          <dl class="kv" style="margin-top:10px"><dt>Дата</dt><dd>${esc(i.date)}</dd><dt>Оплата</dt><dd>${METHOD[i.method]}</dd>${i.client ? `<dt>Клиент</dt><dd>${esc(i.client)}</dd>` : ''}${i.object ? `<dt>${esc(objL())}</dt><dd>${esc(i.object)}</dd>` : ''}${i.category ? `<dt>Категория</dt><dd>${esc(i.category)}</dd>` : ''}</dl>
           ${i.comment ? `<div class="quote" style="margin-top:12px">${esc(i.comment)}</div>` : ''}</div>
         <div class="card"><h3>Документы</h3>${i.files.length ? `<div class="files">${i.files.map((f) => fileCard(f, i.mine && i.can_edit)).join('')}</div>` : !(i.mine && i.can_edit) ? '<div class="empty small">Файлов нет</div>' : ''}
           ${i.mine && i.can_edit ? `<label class="drop" id="drop" style="margin-top:12px">${ic('upload', 26)}<b>Прикрепить накладную, акт или чек</b><input type="file" id="file-in" accept="image/*,application/pdf" multiple hidden></label>` : ''}<div id="ai-out"></div></div>
@@ -1296,7 +1303,7 @@
       <div class="card" style="margin-bottom:16px"><div class="card-h"><h3>Доходы и расходы по месяцам</h3><span class="faint small">12 месяцев до конца периода</span></div>${monthlyChart(o.monthly, 1080, 300)}
         <details style="margin-top:12px"><summary class="link small" style="cursor:pointer">Показать таблицей</summary><div class="table-wrap"><table class="t" style="margin-top:8px"><thead><tr><th>Месяц</th><th class="r">Доходы</th><th class="r">Расходы</th><th class="r">Прибыль</th></tr></thead><tbody>${o.monthly.map((m) => `<tr><td>${monthName(m.month)}</td><td class="r num">${money(m.income)}</td><td class="r num">${money(m.expenses)}</td><td class="r num ${m.profit >= 0 ? 'up' : 'down'}">${money(m.profit)}</td></tr>`).join('')}</tbody></table></div></details></div>
       <div class="grid-2">
-        <div class="card"><div class="card-h"><h3>Прибыль по объектам</h3></div>${objRows ? `<div class="table-wrap"><table class="t resp"><thead><tr><th>Объект</th><th class="r">Доход</th><th class="r">Расход</th><th class="r">Прибыль</th><th class="r hide-m">Марж.</th></tr></thead><tbody>${objRows}</tbody></table></div>` : '<div class="empty small">Нет данных</div>'}</div>
+        <div class="card" ${so('use_objects') ? '' : 'hidden'}><div class="card-h"><h3>Прибыль: ${esc(objL().toLowerCase())}</h3></div>${objRows ? `<div class="table-wrap"><table class="t resp"><thead><tr><th>${esc(objL())}</th><th class="r">Доход</th><th class="r">Расход</th><th class="r">Прибыль</th><th class="r hide-m">Марж.</th></tr></thead><tbody>${objRows}</tbody></table></div>` : '<div class="empty small">Нет данных</div>'}</div>
         <div class="card"><div class="card-h"><h3>Расходы по категориям</h3></div>${hbars(o.by_category)}</div>
         <div class="card"><div class="card-h"><h3>Расходы по сотрудникам</h3><span class="faint small">план — согласовано, факт — по чекам</span></div>${staffRows ? `<div class="table-wrap"><table class="t"><thead><tr><th>Сотрудник</th><th class="r">Заявок</th><th class="r">План</th><th class="r">Факт</th><th class="r">Откл.</th></tr></thead><tbody>${staffRows}</tbody></table></div>` : '<div class="empty small">Нет данных</div>'}</div>
         <div class="card"><div class="card-h"><h3>Доходы по категориям</h3></div>${hbars(o.income_by_category, { inColor: true })}</div>
@@ -1421,40 +1428,93 @@
   }
 
   // ================= Настройки =================
+  // ---- опции подразделения ----
+  const OPT_SWITCHES = [
+    ['Разделы', [
+      ['mod_incomes', 'Доходы', 'Сотрудники вносят продажи, услуги, оплаты клиентов'],
+      ['mod_cash', 'Касса', 'Наличные подразделения: остаток, пополнения, расходы, пересчёт'],
+      ['mod_money', 'Деньги под отчёт', 'Заявки «выдайте сумму», потом отчёт чеками'],
+      ['mod_delivery', 'Доставка', 'Стоимость доставки к заявке после получения'],
+      ['mod_control', 'Контроль цен', 'Подсветка завышенных цен, перерасхода, повторных чеков'],
+      ['use_objects', 'Поле «Объект»', 'Привязка заявок и доходов к объекту, клиенту или проекту — для прибыли по каждому'],
+    ]],
+    ['Правила заявок', [
+      ['require_link', 'Ссылка обязательна для онлайн-покупки', 'Без ссылки на товар заявку не отправить'],
+      ['require_receipt', 'Чек обязателен', 'Без фото чека или накладной отчёт не принимается'],
+      ['require_object', 'Объект обязателен', 'Без объекта заявку и доход не сохранить'],
+      ['require_category', 'Категория обязательна', 'Без категории заявку и доход не сохранить'],
+    ]],
+    ['Доходы и касса', [
+      ['income_confirm', 'Доходы подтверждает руководитель', 'Если выключить — доход учитывается сразу после внесения'],
+      ['cash_all', 'Все доходы и расходы проходят через кассу', 'Если выключить — в кассу попадают только наличные операции'],
+    ]],
+  ];
+  const PRESETS = {
+    bh: { title: 'Как в БХ', hint: 'База, производство: всё включено, строгие правила', v: { mod_incomes: true, mod_cash: true, mod_money: true, mod_delivery: true, mod_control: true, use_objects: true, label_object: 'Объект',
+      require_link: true, require_receipt: true, require_object: false, require_category: false, income_confirm: true, cash_all: true, auto_approve_below: 0 } },
+    sales: { title: 'Отдел продаж', hint: 'Доходы по клиентам, расходы на продажи', v: { mod_incomes: true, mod_cash: true, mod_money: true, mod_delivery: true, mod_control: false, use_objects: true, label_object: 'Клиент',
+      require_link: false, require_receipt: true, require_object: true, require_category: true, income_confirm: true, cash_all: true, auto_approve_below: 0 },
+      lists: { categories: ['Реклама', 'Доставка клиентам', 'Образцы', 'Упаковка', 'Связь', 'Представительские', 'Транспорт', 'Прочее'], income_categories: ['Продажа', 'Предоплата', 'Доплата', 'Услуги', 'Прочее'] } },
+    office: { title: 'Офис', hint: 'Хозяйственные расходы, мелочь согласуется сама', v: { mod_incomes: false, mod_cash: true, mod_money: true, mod_delivery: true, mod_control: false, use_objects: false, label_object: 'Объект',
+      require_link: false, require_receipt: true, require_object: false, require_category: true, income_confirm: true, cash_all: true, auto_approve_below: 1000 },
+      lists: { categories: ['Канцелярия', 'Хозтовары', 'Вода и кофе', 'Связь и интернет', 'Техника', 'Ремонт', 'Транспорт', 'Прочее'] } },
+  };
   function pageSettings() {
     const s = S.settings;
     const ta = (name, label, hint) => `<label class="field"><span>${label}</span><textarea class="input" name="${name}" rows="6">${esc((s[name] || []).join('\n'))}</textarea><small class="hint">${hint}</small></label>`;
-    return `${head('Настройки', 'Правила проверок и справочники. Любое изменение записывается в журнал.')}
+    const sw = ([k, t, h]) => `<label class="opt"><input type="checkbox" name="${k}" ${s[k] !== false ? 'checked' : ''}><span class="opt-sw"></span><span><b>${t}</b><small>${h}</small></span></label>`;
+    return `${head('Настройки', `Настройки подразделения «${esc(divName())}». В других подразделениях свои настройки. Любое изменение записывается в журнал.`)}
       <form id="sf" class="stack">
         <div class="card stack"><h3 style="margin:0">Подразделение</h3><div class="form-grid">
           <label class="field"><span>Название</span><input class="input" name="division_name" value="${esc(s.division_name || divName())}" maxlength="60"><small class="hint">Показывается в меню и в уведомлениях Telegram</small></label>
           <div class="field"><span>Другие подразделения</span><button type="button" class="btn soft" data-divs>${ic('building', 16)} Переключить или создать</button></div></div>
-          <label class="row" style="align-items:flex-start;gap:10px"><input type="checkbox" name="cash_all" ${s.cash_all !== false ? 'checked' : ''} style="margin-top:4px"><span><b>Все доходы и расходы проходят через кассу</b><br><span class="small muted">Каждый подтверждённый доход приходует в кассу, каждая проведённая заявка и доставка списывается из кассы. Если выключить — в кассу попадают только наличные операции, а сотрудник указывает, чем оплатил.</span></span></label></div>
-        <div class="card stack"><h3 style="margin:0">Правила</h3><div class="form-grid">
-          <label class="field"><span>Окно самостоятельной правки, часов</span><input class="input" name="edit_hours" inputmode="decimal" value="${esc(s.edit_hours)}"><small class="hint">После — только через запрос на корректировку</small></label>
-          <label class="field"><span>Цена выше обычной на, %</span><input class="input" name="price_alert_pct" inputmode="decimal" value="${esc(s.price_alert_pct)}"><small class="hint">Порог подсветки в «Контроле»</small></label>
-          <label class="field"><span>Перерасход к согласованному, %</span><input class="input" name="overspend_alert_pct" inputmode="decimal" value="${esc(s.overspend_alert_pct)}"></label>
-        </div></div>
-        <div class="card"><div class="grid-2">
-          ${ta('objects', 'Объекты и заказы', 'По одному в строке. Нужны, чтобы считать прибыль по каждому объекту')}
-          ${ta('categories', 'Категории расходов', 'По одной в строке')}
-          ${ta('income_categories', 'Категории доходов', 'По одной в строке')}
-          ${ta('units', 'Единицы измерения', 'шт, м, кг…')}
-        </div></div>
-        <div class="row" style="justify-content:flex-end"><button class="btn lg">Сохранить</button></div>
+          <div class="field"><span>Готовые наборы настроек</span>
+            <div class="presets">${Object.entries(PRESETS).map(([k, p]) => `<button type="button" class="preset" data-preset="${k}"><b>${p.title}</b><small>${p.hint}</small></button>`).join('')}</div>
+            <small class="hint">Набор заполняет переключатели${''} и справочники ниже — проверьте и нажмите «Сохранить». Потом можно менять что угодно.</small></div>
+        </div>
+        ${OPT_SWITCHES.map(([title, list]) => `<div class="card stack"><h3 style="margin:0">${title}</h3><div class="opts">${list.map(sw).join('')}</div>
+          ${title === 'Правила заявок' ? `<div class="form-grid">
+            <label class="field"><span>Автосогласование заявок на покупку до, ${cur()}</span><input class="input" name="auto_approve_below" inputmode="decimal" value="${esc(s.auto_approve_below || 0)}"><small class="hint">0 — выключено. Мелкие покупки согласуются сами, руководитель видит их в списке</small></label>
+            <label class="field"><span>Окно самостоятельной правки, часов</span><input class="input" name="edit_hours" inputmode="decimal" value="${esc(s.edit_hours)}"><small class="hint">После — только через запрос на корректировку</small></label>
+            <label class="field"><span>Цена выше обычной на, %</span><input class="input" name="price_alert_pct" inputmode="decimal" value="${esc(s.price_alert_pct)}"><small class="hint">Порог подсветки в «Контроле»</small></label>
+            <label class="field"><span>Перерасход к согласованному, %</span><input class="input" name="overspend_alert_pct" inputmode="decimal" value="${esc(s.overspend_alert_pct)}"></label>
+          </div>` : ''}</div>`).join('')}
+        <div class="card stack"><h3 style="margin:0">Справочники</h3>
+          <div class="form-grid"><label class="field"><span>Как называть поле «Объект»</span><input class="input" name="label_object" value="${esc(s.label_object || 'Объект')}" maxlength="30" list="obj-labels">
+            <datalist id="obj-labels"><option>Объект</option><option>Клиент</option><option>Проект</option><option>Направление</option><option>Заказ</option></datalist><small class="hint">Например, в отделе продаж — «Клиент»</small></label></div>
+          <div class="grid-2">
+            ${ta('objects', `${esc(s.label_object || 'Объект')}: список`, 'По одному в строке. По ним считается прибыль')}
+            ${ta('categories', 'Категории расходов', 'По одной в строке')}
+            ${ta('income_categories', 'Категории доходов', 'По одной в строке')}
+            ${ta('units', 'Единицы измерения', 'шт, м, кг…')}
+          </div></div>
+        <div class="row save-bar"><span class="faint small" id="sf-dirty"></span><button class="btn lg">Сохранить</button></div>
       </form>
-      <div class="card" style="margin-top:16px"><h3>Распознавание чеков (ИИ)</h3><p class="muted" style="margin:0">${S.meta.ai ? `${ic('checkCircle', 16)} Подключено. У каждого чека есть кнопка «Распознать ИИ»: позиции и итог сверяются с отчётом.` : 'Не подключено. Чтобы включить, задайте на сервере переменную ANTHROPIC_API_KEY (см. README).'}</p></div>`;
+      <div class="card" style="margin-top:16px"><h3>Распознавание чеков (ИИ)</h3><p class="muted" style="margin:0">${S.meta.ai ? `${ic('checkCircle', 16)} Подключено. У каждого чека есть кнопка «Распознать ИИ».` : 'Не подключено. Чтобы включить, задайте на сервере переменную ANTHROPIC_API_KEY (см. README).'}</p></div>`;
   }
   pageSettings.after = () => {
-    $('#sf').onsubmit = async (e) => {
-      e.preventDefault(); const f = e.target;
+    const f = $('#sf');
+    const dirty = () => { $('#sf-dirty').textContent = 'Есть несохранённые изменения'; };
+    f.addEventListener('input', dirty); f.addEventListener('change', dirty);
+    $$('[data-preset]').forEach((b) => b.onclick = async () => {
+      const p = PRESETS[b.dataset.preset];
+      if (!(await confirmBox(`Набор «${p.title}»`, `Заполнить переключатели${p.lists ? ' и справочники (категории)' : ''} по набору «${p.title}»? Сохранится только после кнопки «Сохранить».`, 'Заполнить'))) return;
+      for (const [k, v] of Object.entries(p.v)) { const el = f.elements[k]; if (!el) continue; if (el.type === 'checkbox') el.checked = v; else el.value = v; }
+      for (const [k, v] of Object.entries(p.lists || {})) f.elements[k].value = v.join('\n');
+      $$('[data-preset]').forEach((x) => x.classList.toggle('on', x === b)); dirty();
+    });
+    f.onsubmit = async (e) => {
+      e.preventDefault();
       const lines = (n) => f[n].value.split('\n').map((x) => x.trim()).filter(Boolean);
+      const body = { edit_hours: f.edit_hours.value.replace(',', '.'), price_alert_pct: f.price_alert_pct.value, overspend_alert_pct: f.overspend_alert_pct.value,
+        objects: lines('objects'), categories: lines('categories'), income_categories: lines('income_categories'), units: lines('units'), division_name: f.division_name.value,
+        label_object: f.label_object.value, auto_approve_below: f.auto_approve_below.value.replace(/\s/g, '').replace(',', '.') };
+      for (const [, list] of OPT_SWITCHES) for (const [k] of list) body[k] = f.elements[k].checked;
       try {
-        const s = await put('/api/head/settings', { edit_hours: f.edit_hours.value.replace(',', '.'), price_alert_pct: f.price_alert_pct.value, overspend_alert_pct: f.overspend_alert_pct.value,
-          objects: lines('objects'), categories: lines('categories'), income_categories: lines('income_categories'), units: lines('units'), division_name: f.division_name.value, cash_all: f.cash_all.checked });
+        const s = await put('/api/head/settings', body);
         if (S.division) S.division.name = s.division_name; document.title = `${s.division_name} · Учёт`;
-        $('.shell').querySelectorAll('.brand b').forEach((b) => { b.textContent = s.division_name; });
         S.settings = { ...S.settings, ...s }; toast('Настройки сохранены');
+        render(); // меню и разделы перестраиваются под новые опции
       } catch (err) { fail(err); }
     };
   };
@@ -1793,7 +1853,7 @@
   };
   function pageMore() {
     const links = [['/analytics', 'chart', 'Аналитика'], ['/control', 'shield', 'Контроль'], ['/money', 'money', 'Операции'], ['/cash', 'wallet', 'Касса'], ['/incomes', 'coins', 'Доходы'], ['/journal', 'history', 'Журнал'], ['/team', 'users', 'Команда'], ['/settings', 'sliders', 'Настройки'], ['/new', 'plus', 'Новая заявка'], ['/profile', 'user', 'Профиль']];
-    return `${head('Ещё')}<div class="card flush"><div class="list">${links.map(([p, i, t]) => `<a class="li" href="#${p}"><div class="t1 row">${ic(i)} ${t}</div><div>${ic('chevronRight')}</div></a>`).join('')}</div></div>`;
+    return `${head('Ещё')}<div class="card flush"><div class="list">${links.filter(navOk).map(([p, i, t]) => `<a class="li" href="#${p}"><div class="t1 row">${ic(i)} ${t}</div><div>${ic('chevronRight')}</div></a>`).join('')}</div></div>`;
   }
 
   render();

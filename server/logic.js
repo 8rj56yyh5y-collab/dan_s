@@ -142,9 +142,22 @@ function planFields(body, settings) {
     channel: body.channel === 'offline' ? 'offline' : 'online',
   };
   if (!out.title) throw new HttpError(400, 'Напишите, что покупаем / на что деньги');
-  if (out.object && !settings.objects.includes(out.object)) throw new HttpError(400, 'Выберите объект из списка');
-  if (out.category && !settings.categories.includes(out.category)) throw new HttpError(400, 'Выберите категорию из списка');
+  checkObjectCategory(out, settings, settings.categories);
   return out;
+}
+
+// Поля «объект» и «категория» по опциям подразделения.
+function checkObjectCategory(f, settings, categories) {
+  const lbl = settings.label_object || 'Объект';
+  if (settings.use_objects === false) f.object = '';
+  if (f.object && !settings.objects.includes(f.object)) throw new HttpError(400, `${lbl}: выберите из списка`);
+  if (settings.use_objects !== false && settings.require_object && !f.object) throw new HttpError(400, `Укажите поле «${lbl}»`);
+  if (f.category && !categories.includes(f.category)) throw new HttpError(400, 'Выберите категорию из списка');
+  if (settings.require_category && !f.category) throw new HttpError(400, 'Укажите категорию');
+}
+const opt = (key) => getSettings()[key] !== false;
+function needModule(key, name) {
+  if (getSettings()[key] === false) throw new HttpError(403, `${name} в этом подразделении выключен(а) в настройках`);
 }
 
 // ---------- касса: общие помощники (ручные операции и отчёт — в cash.js) ----------
@@ -168,7 +181,7 @@ function cashVoid(where, args, userId, reason) {
 // Чем оплачена покупка (если деньги не выдавались под отчёт).
 const PAY_FROM = { cash: 'Из кассы БХ', company: 'Картой / счётом компании', self: 'Своими деньгами — вернуть мне' };
 // Режим «всё через кассу» (по умолчанию): любой доход приходует в кассу, любой расход списывается из неё.
-const cashAll = () => getSettings().cash_all !== false;
+const cashAll = () => { const st = getSettings(); return st.cash_all !== false && st.mod_cash !== false; };
 function payFromOf(r) {
   // Деньги выдавались из кассы под отчёт — касса уже уменьшилась при выдаче.
   if (r.issued_amount != null && (r.issued_from_cash || !cashAll())) return 'advance';
@@ -191,12 +204,13 @@ function createRequest(user, body) {
   if (user.role !== 'staff' && user.role !== 'head') throw new HttpError(403, 'Нет доступа');
   const settings = getSettings();
   const kind = body.kind === 'money' ? 'money' : 'purchase';
+  if (kind === 'money') needModule('mod_money', 'Раздел «Деньги под отчёт»');
   const f = planFields(body, settings);
   const items = parseItems(body.items, { kind });
   let amount;
   if (kind === 'purchase') {
     if (!items.length) throw new HttpError(400, 'Добавьте хотя бы один товар');
-    if (f.channel === 'online') {
+    if (f.channel === 'online' && settings.require_link !== false) {
       const noLink = items.find((i) => !i.url);
       if (noLink) throw new HttpError(400, `Для онлайн-покупки нужна ссылка на товар «${noLink.name}»`);
     }
@@ -214,6 +228,12 @@ function createRequest(user, body) {
     const id = Number(r.lastInsertRowid);
     writeItems(id, items);
     logEvent(user.id, 'request', id, 'created', { kind, amount, items: items.length });
+    // Мелкие покупки согласуются автоматически (если включено в настройках подразделения).
+    const limit = Number(settings.auto_approve_below) || 0;
+    if (kind === 'purchase' && limit > 0 && amount <= limit) {
+      db.prepare("UPDATE requests SET status = 'approved', approved_amount = ?, decided_at = ?, updated_at = ? WHERE id = ?").run(amount, now, now, id);
+      logEvent(null, 'request', id, 'approved', { approved_amount: amount, comment: `Автоматически: сумма до ${fm(limit)}`, auto: true });
+    }
     return id;
   });
 }
@@ -234,7 +254,7 @@ function updateRequest(user, id, body) {
       let amount = r.amount;
       if (r.kind === 'purchase') {
         if (!items.length) throw new HttpError(400, 'Добавьте хотя бы один товар');
-        if (f.channel === 'online') {
+        if (f.channel === 'online' && settings.require_link !== false) {
           const noLink = items.find((i) => !i.url);
           if (noLink) throw new HttpError(400, `Для онлайн-покупки нужна ссылка на товар «${noLink.name}»`);
         }
@@ -331,7 +351,7 @@ function reportActual(items, receiptTotal, noBreakdown) {
 function checkReport(r, { byHead = false } = {}) {
   const items = itemsOf(r.id);
   const receipts = db.prepare("SELECT COUNT(*) n FROM files WHERE request_id = ? AND kind IN ('receipt','invoice')").get(r.id).n;
-  if (!receipts) throw new HttpError(400, 'Без чека или накладной отчёт не принимается. Прикрепите фото или PDF.');
+  if (!receipts && opt('require_receipt')) throw new HttpError(400, 'Без чека или накладной отчёт не принимается. Прикрепите фото или PDF.');
   const complete = items.length > 0 && items.every((i) => i.actual_price != null);
   const sum = complete ? actualTotal(items) : null;
   let receiptTotal = r.receipt_total;
@@ -423,7 +443,7 @@ function headAction(user, id, action, body = {}) {
         const amt = money(body.issued_amount ?? r.approved_amount ?? r.amount, { allowZero: false });
         if (amt == null) throw new HttpError(400, 'Проверьте выданную сумму');
         // По умолчанию деньги выдаются из кассы; «не из кассы» — например, переводом на карту.
-        const fromCash = !(body.from_cash === false || body.from_cash === '0' || body.from_cash === 'no');
+        const fromCash = opt('mod_cash') && !(body.from_cash === false || body.from_cash === '0' || body.from_cash === 'no');
         if (fromCash) {
           const bal = cashBalance();
           if (amt > bal) throw new HttpError(409, `В кассе ${fm(bal)} — не хватает на выдачу ${fm(amt)}. Пополните кассу или выберите «не из кассы».`);
@@ -438,7 +458,7 @@ function headAction(user, id, action, body = {}) {
         // Сотрудник приложил чек, но отчёт не отправил: руководитель сам вносит цены из чека и проводит.
         if (!['approved', 'issued', 'report_revision', 'review'].includes(r.status)) throw new HttpError(409, 'Провести по чеку сейчас нельзя');
         const receipts = db.prepare("SELECT COUNT(*) n FROM files WHERE request_id = ? AND kind IN ('receipt','invoice')").get(r.id).n;
-        if (!receipts) throw new HttpError(400, 'Нет чека — провести нельзя. Попросите сотрудника приложить чек.');
+        if (!receipts && opt('require_receipt')) throw new HttpError(400, 'Нет чека — провести нельзя. Попросите сотрудника приложить чек.');
         writeReport(user, r, { ...body, report_comment: undefined }, itemsOf(r.id), 'report_by_head');
         const fresh = loadRequest(r.id);
         const c = checkReport(fresh, { byHead: true });
@@ -565,6 +585,7 @@ function canAddDelivery(user, r) {
 }
 
 function addDelivery(user, rid, body) {
+  needModule('mod_delivery', 'Доставка');
   const r = requestFor(user, rid);
   if (!(user.role === 'head' || r.user_id === user.id)) throw new HttpError(403, 'Доставку добавляет автор заявки или руководитель');
   if (!DELIVERY_STATUSES.includes(r.status)) throw new HttpError(409, 'Доставку можно добавить после согласования заявки');
@@ -622,11 +643,11 @@ function incomeFields(body, settings) {
   if (!f.date) throw new HttpError(400, 'Укажите дату');
   if (!f.title) throw new HttpError(400, 'Напишите, что продали или за что оплата');
   if (f.amount == null) throw new HttpError(400, 'Укажите сумму');
-  if (f.object && !settings.objects.includes(f.object)) throw new HttpError(400, 'Выберите объект из списка');
-  if (f.category && !settings.income_categories.includes(f.category)) throw new HttpError(400, 'Выберите категорию из списка');
+  checkObjectCategory(f, settings, settings.income_categories);
   return f;
 }
 function createIncome(user, body) {
+  needModule('mod_incomes', 'Раздел «Доходы»');
   const f = incomeFields(body, getSettings());
   const now = Date.now();
   const r = db.prepare(`INSERT INTO incomes (date, title, client, object, category, amount, method, comment, user_id, edit_until, created_at, updated_at)
@@ -634,6 +655,8 @@ function createIncome(user, body) {
     .run(f.date, f.title, f.client, f.object, f.category, f.amount, f.method, f.comment, user.id, now + editMs(), now, now);
   const id = Number(r.lastInsertRowid);
   logEvent(user.id, 'income', id, 'created', { amount: f.amount });
+  // Без подтверждения руководителем доход сразу учитывается.
+  if (!opt('income_confirm')) confirmIncome(user, loadIncome(id), 'Автоматически: подтверждение выключено в настройках', true);
   return id;
 }
 function updateIncome(user, id, body) {
@@ -648,6 +671,12 @@ function updateIncome(user, id, body) {
   logEvent(user.id, 'income', inc.id, 'edited', { changes });
   return { changed: true };
 }
+function confirmIncome(user, inc, comment, auto = false) {
+  const now = Date.now();
+  db.prepare("UPDATE incomes SET status='confirmed', head_comment=?, decided_at=?, decided_by=?, updated_at=? WHERE id=?").run(comment, now, auto ? null : user.id, now, inc.id);
+  if ((inc.method === 'cash' && opt('mod_cash')) || cashAll()) cashInsert({ direction: 'in', kind: 'income', amount: inc.amount, income_id: inc.id, object: inc.object, category: inc.category, comment: inc.title.slice(0, 300), user_id: user.id, ts: Math.min(Date.parse(`${inc.date}T12:00:00`) || now, now) });
+  if (auto) logEvent(null, 'income', inc.id, 'confirmed', { comment, auto: true });
+}
 function headIncomeAction(user, id, action, body = {}) {
   if (user.role !== 'head') throw new HttpError(403, 'Только для руководителя');
   const inc = loadIncome(id);
@@ -655,10 +684,7 @@ function headIncomeAction(user, id, action, body = {}) {
   const now = Date.now();
   if (action === 'confirm') {
     if (inc.status !== 'new') throw new HttpError(409, 'Запись уже обработана');
-    tx(() => {
-      db.prepare("UPDATE incomes SET status='confirmed', head_comment=?, decided_at=?, decided_by=?, updated_at=? WHERE id=?").run(comment, now, user.id, now, inc.id);
-      if (inc.method === 'cash' || cashAll()) cashInsert({ direction: 'in', kind: 'income', amount: inc.amount, income_id: inc.id, object: inc.object, category: inc.category, comment: inc.title.slice(0, 300), user_id: user.id, ts: Math.min(Date.parse(`${inc.date}T12:00:00`) || now, now) });
-    });
+    tx(() => confirmIncome(user, inc, comment));
   } else if (action === 'reject') {
     if (inc.status !== 'new') throw new HttpError(409, 'Запись уже обработана');
     if (!comment) throw new HttpError(400, 'Напишите причину');
@@ -779,6 +805,7 @@ function flagsForRequest(r, items, files, settings = getSettings()) {
 }
 
 module.exports = {
+  opt, needModule,
   cashAll,
   PAY_FROM, payFromOf, cashPayRequest,
   cashBalance, cashInsert, cashVoid, fm,
