@@ -1,5 +1,5 @@
 'use strict';
-/* БХ Учёт — интерфейс (без фреймворков). Маршруты через #/... */
+/* Максимет · система учёта — интерфейс (без фреймворков). Маршруты через #/... */
 (function () {
   // ================= Утилиты =================
   const $ = (s, el = document) => el.querySelector(s);
@@ -133,7 +133,7 @@
     const theme = document.documentElement.dataset.theme;
     return `<div class="shell">
       <aside class="side">
-        ${isHead() ? `<button class="brand brand-switch" data-divs title="Сменить подразделение">` : '<a class="brand" href="#/">'}<span class="brand-mark">${esc(divMark())}</span><span><b>${esc(divName())}</b><span>${isHead() ? 'Кабинет руководителя' : 'Кабинет сотрудника'}</span></span>${isHead() ? `${ic('chevronDown', 16)}</button>` : '</a>'}
+        ${isHead() ? `<button class="brand brand-switch" data-divs title="Сменить подразделение">` : '<a class="brand" href="#/">'}<span class="brand-mark logo">${LOGO}</span><span><b>Максимет</b><span>${esc(divName())} · ${isHead() ? 'руководитель' : 'сотрудник'}</span></span>${isHead() ? `${ic('chevronDown', 16)}</button>` : '</a>'}
         <a class="btn hl" href="#/new">${ic('plus', 18)} Новая заявка</a>
         <nav class="nav">${nav}</nav>
         <div class="side-foot">
@@ -141,7 +141,7 @@
           <a class="me" href="#/profile"><span class="avatar">${esc(initials(S.me.name))}</span><span style="min-width:0"><b>${esc(S.me.name)}</b><span>${esc(S.me.position || (isHead() ? 'Руководитель' : 'Сотрудник'))}</span></span></a>
         </div>
       </aside>
-      <header class="top">${isHead() ? '<button class="brand brand-switch" data-divs>' : '<a class="brand" href="#/">'}<span class="brand-mark">${esc(divMark())}</span><span><b>${esc(divName())}</b></span>${isHead() ? `${ic('chevronDown', 16)}</button>` : '</a>'}
+      <header class="top">${isHead() ? '<button class="brand brand-switch" data-divs>' : '<a class="brand" href="#/">'}<span class="brand-mark logo">${LOGO}</span><span><b>${esc(divName())}</b></span>${isHead() ? `${ic('chevronDown', 16)}</button>` : '</a>'}
         <div class="row"><a class="icon-btn" href="#/new" aria-label="Новая заявка">${ic('plus', 20)}</a><a class="icon-btn" href="#/profile" aria-label="Профиль">${ic('user', 20)}</a></div></header>
       <main class="main" id="main">${content}</main>
       <nav class="tabbar" style="grid-template-columns:repeat(${tabList.length},1fr)">${tabs}</nav>
@@ -180,7 +180,7 @@
     if (!S.settings) {
       try { [S.settings, S.meta] = await Promise.all([api('/api/settings'), api('/api/meta')]); } catch (e) { return fail(e); }
     }
-    document.title = `${divName()} · Учёт`;
+    document.title = `${divName()} · Максимет`;
     const r = route();
     const pages = {
       '': isHead() ? pageHeadHome : pageStaffHome,
@@ -230,7 +230,7 @@
   function pageLogin(root) {
     root.innerHTML = `<div class="auth">
       <section class="auth-art">
-        <a class="brand"><span class="brand-mark">БХ</span><span><b>БХ Учёт</b><span>подразделение БХ</span></span></a>
+        <a class="brand"><span class="brand-mark logo">${LOGO}</span><span><b>Максимет</b><span>система учёта</span></span></a>
         <div><h1>Сильные дела начинаются с порядка</h1><p>Мы строим базу, на которую можно опереться. День за днём — честно, слаженно и с уважением к общему делу.</p>
           <blockquote class="motto">${esc(MOTTOS[Math.floor(Math.random() * MOTTOS.length)])}</blockquote></div>
         <div class="pts">
@@ -258,7 +258,7 @@
     setTimeout(() => $('#lf input').focus(), 30);
   }
   function pageForcePassword(root) {
-    root.innerHTML = `<div class="auth"><section class="auth-art"><a class="brand"><span class="brand-mark">БХ</span><span><b>БХ Учёт</b></span></a>
+    root.innerHTML = `<div class="auth"><section class="auth-art"><a class="brand"><span class="brand-mark logo">${LOGO}</span><span><b>Максимет</b><span>система учёта</span></span></a>
       <div><h1>Придумайте свой пароль</h1><p>Вы вошли по временному паролю. Задайте постоянный — его будете знать только вы.</p></div><div></div></section>
       <section class="auth-form"><form class="box" id="pf" novalidate>
         <h2 style="margin:0">Смена пароля</h2>
@@ -277,6 +277,8 @@
   }
   // ---- подразделения ----
   const divName = () => (S.division && S.division.name) || 'БХ';
+  // Знак MAXIMET (как на сайте компании)
+  const LOGO = '<svg viewBox="0 0 64 64" aria-hidden="true"><rect width="64" height="64" rx="14" fill="#16181B"/><path d="M11 13h12v4h-3.5v30H23v4H11v-4h3.5V17H11z" fill="#E8E9EB"/><path d="M41 13h12v4h-3.5v30H53v4H41v-4h3.5V17H41z" fill="#E8E9EB"/><path d="M19.5 17 32 34.5 44.5 17h-5.6L32 26.7 25.1 17z" fill="#E8E9EB"/><path d="M22.5 51 32 37.5 41.5 51z" fill="#FF5A1F"/><path d="M29.6 41 32 37.5 34.4 41z" fill="#FFB36B"/></svg>';
   const divMark = () => { const w = divName().split(/\s+/).filter(Boolean); return (w.length > 1 ? w[0][0] + w[1][0] : divName().slice(0, 2)).toUpperCase(); };
   async function switchDivision(slug) {
     try { await post('/api/divisions/switch', { slug }); S.me = null; S.settings = null; S.division = null; location.hash = '#/'; render(); toast('Подразделение переключено'); } catch (e) { fail(e); }
@@ -1392,7 +1394,7 @@
     return modal(`<h2>Данные для входа</h2><p class="muted" style="margin:0">Передайте сотруднику лично. Пароль показывается один раз — при первом входе его нужно сменить.</p>
       <div class="field"><span>Логин</span><div class="secret">${esc(login)}</div></div><div class="field"><span>Временный пароль</span><div class="secret">${esc(password)}</div></div>
       <div class="acts"><button class="btn soft" id="cp">${ic('doc', 16)} Скопировать</button><button class="btn" data-close>Готово</button></div>`, {
-      onOpen: (box) => { $('#cp', box).onclick = () => { navigator.clipboard?.writeText(`Вход в БХ Учёт: ${location.origin}\nЛогин: ${login}\nПароль: ${password}`).then(() => toast('Скопировано')); }; },
+      onOpen: (box) => { $('#cp', box).onclick = () => { navigator.clipboard?.writeText(`Вход в «Максимет»: ${location.origin}\nЛогин: ${login}\nПароль: ${password}`).then(() => toast('Скопировано')); }; },
     });
   }
   function userDialog(u) {
@@ -1512,7 +1514,7 @@
       for (const [, list] of OPT_SWITCHES) for (const [k] of list) body[k] = f.elements[k].checked;
       try {
         const s = await put('/api/head/settings', body);
-        if (S.division) S.division.name = s.division_name; document.title = `${s.division_name} · Учёт`;
+        if (S.division) S.division.name = s.division_name; document.title = `${s.division_name} · Максимет`;
         S.settings = { ...S.settings, ...s }; toast('Настройки сохранены');
         render(); // меню и разделы перестраиваются под новые опции
       } catch (err) { fail(err); }
@@ -1813,7 +1815,7 @@
           <button class="btn">Сменить пароль</button></form>
         <div class="card stack"><h3 style="margin:0">Оформление</h3>
           <div class="theme-switch" style="max-width:320px">${themeButtons(theme)}</div>
-          <p class="muted small" style="margin:0">На iPhone: «Поделиться» → «На экран Домой» — БХ Учёт откроется как приложение.</p>
+          <p class="muted small" style="margin:0">На iPhone: «Поделиться» → «На экран Домой» — «Максимет» откроется как приложение.</p>
           <button class="btn danger" id="logout">${ic('logout')} Выйти</button></div>
         <div class="card stack" id="tg-card"><h3 style="margin:0">${ic('send', 18)} Уведомления в Telegram</h3><div class="muted small">Загрузка…</div></div>
       </div>`;

@@ -1,11 +1,16 @@
 {
-  "name": "БХ Учёт",
-  "short_name": "БХ Учёт",
-  "description": "Заявки на закупку, деньги под отчёт, чеки и доходы подразделения БХ",
+  "name": "Максимет · система учёта",
+  "short_name": "Максимет",
+  "description": "Заявки на закупку, деньги под отчёт, чеки и доходы подразделений",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#000000",
-  "theme_color": "#000000",
+  "background_color": "#16181B",
+  "theme_color": "#16181B",
   "lang": "ru",
-  "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
 }

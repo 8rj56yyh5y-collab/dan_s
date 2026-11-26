@@ -1,5 +1,5 @@
 'use strict';
-// БХ Учёт — сервер. Node 22+, без фреймворков: node:http + node:sqlite.
+// Максимет — сервер. Node 22+, без фреймворков: node:http + node:sqlite.
 const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -600,7 +600,7 @@ function createServer() {
 if (require.main === module) {
   bootstrap();
   if (process.env.DEMO === '1' && db.prepare('SELECT COUNT(*) n FROM requests').get().n === 0) require('./demo').seed();
-  createServer().listen(PORT, () => console.log(`БХ Учёт v${VERSION}: http://localhost:${PORT}`));
+  createServer().listen(PORT, () => console.log(`Максимет v${VERSION}: http://localhost:${PORT}`));
   tg.start();
 }
 
