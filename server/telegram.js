@@ -97,6 +97,7 @@ function flagsText(r) {
 const notify = {
   requestCreated(id, again = false) {
     const r = L.loadRequest(id);
+    if (r.status === 'approved') { fire(toHeads(r.user_id, requestText(r, '✅ Согласована автоматически (мелкая покупка)'), [], `/r/${id}`)); return; }
     fire(toHeads(r.user_id, requestText(r, again ? '🔁 Заявка снова на согласовании' : '🆕 Новая заявка') + flagsText(r),
       [[['✅ Согласовать', `h:approve:r:${id}`]], [['↩️ На доработку', `h:return:r:${id}`], ['❌ Отклонить', `h:reject:r:${id}`]]], `/r/${id}`));
   },
@@ -129,6 +130,7 @@ const notify = {
   },
   incomeCreated(id) {
     const i = L.loadIncome(id);
+    if (i.status === 'confirmed') { fire(toHeads(i.user_id, `💰 Доход <b>${h(L.incNumber(id))}</b> · ${h(userName(i.user_id))}\n<b>${h(i.title)}</b>\nСумма: <b>${h(fm(i.amount))}</b> · учтён сразу`, [], `/income/${id}`)); return; }
     fire(toHeads(i.user_id, [`💰 Новый доход <b>${h(L.incNumber(id))}</b> · ${h(userName(i.user_id))}`, `<b>${h(i.title)}</b>`,
       `Сумма: <b>${h(fm(i.amount))}</b> · ${h({ cash: 'наличные', card: 'карта', account: 'на счёт' }[i.method])} · ${h(i.date)}`, i.client ? `Клиент: ${h(i.client)}` : ''].filter(Boolean).join('\n'),
     [[['✅ Подтвердить', `h:confirm:i:${id}`], ['❌ Отклонить', `h:reject:i:${id}`]]], `/income/${id}`));

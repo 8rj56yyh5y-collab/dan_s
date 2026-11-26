@@ -163,7 +163,7 @@ function requestDetail(user, id) {
     corrections: correctionsOf('request', r.id),
     deliveries: L.deliveriesOf(r.id).map((d) => ({ ...d, paid_by_text: L.PAID_BY[d.paid_by], can_remove: user.role === 'head' || (d.user_id === user.id && now - d.created_at < Number(getSettings().edit_hours || 2) * 3600e3) })),
     delivery_total: L.deliveryTotal(r.id),
-    can_add_delivery: L.canAddDelivery(user, r),
+    can_add_delivery: L.canAddDelivery(user, r) && L.opt('mod_delivery'),
     mine: r.user_id === user.id,
     can_edit_plan: r.user_id === user.id && L.canEditPlan(r, now),
     can_edit_report: r.user_id === user.id && L.canEditReport(r, now),
@@ -308,6 +308,10 @@ function updateSettings(head, body) {
     units: body.units && list(body.units, 30),
     division_name: body.division_name !== undefined ? (str(body.division_name, 60) || null) : null,
     cash_all: body.cash_all === undefined ? null : !!body.cash_all,
+    ...Object.fromEntries(['mod_incomes', 'mod_cash', 'mod_delivery', 'mod_money', 'mod_control', 'use_objects', 'require_object', 'require_category', 'require_link', 'require_receipt', 'income_confirm']
+      .map((k) => [k, body[k] === undefined ? null : !!body[k]])),
+    label_object: body.label_object !== undefined ? (str(body.label_object, 30) || null) : null,
+    auto_approve_below: body.auto_approve_below !== undefined ? num(body.auto_approve_below, 0, 1e7) : null,
   };
   for (const [k, v] of Object.entries(plan)) {
     if (v == null || (Array.isArray(v) && !v.length)) continue;
@@ -477,7 +481,7 @@ async function api(req, res, url) {
   if (p === '/api/corrections' && m === 'POST') { const id = L.requestCorrection(user, body); tg.notify.correctionRequested(id); return ok({ id }); }
 
   // касса: руководитель и кассир
-  if (p === '/api/cash' && m === 'GET') { if (!cash.canCash(user)) throw new HttpError(403, 'Касса доступна руководителю и кассиру'); return ok(cash.report(q)); }
+  if (p === '/api/cash' && m === 'GET') { L.needModule('mod_cash', 'Раздел «Касса»'); if (!cash.canCash(user)) throw new HttpError(403, 'Касса доступна руководителю и кассиру'); return ok(cash.report(q)); }
   if (p === '/api/cash' && m === 'POST') { const r = cash.createOp(user, body); tg.notify.cashOp(r.id, user.id, body.kind, r.diff); return ok({ ...r, balance: L.cashBalance() }); }
   if (p === '/api/cash/export' && m === 'GET') {
     if (!cash.canCash(user)) throw new HttpError(403, 'Касса доступна руководителю и кассиру');
@@ -487,6 +491,7 @@ async function api(req, res, url) {
     return res.end(csv(cash.csvRows(q)));
   }
   if ((p === '/api/cash/report' || p === '/api/cash/report.xlsx') && m === 'GET') {
+    L.needModule('mod_cash', 'Раздел «Касса»');
     if (!cash.canCash(user)) throw new HttpError(403, 'Касса доступна руководителю и кассиру');
     if (p === '/api/cash/report') return ok(report.reportData(q));
     const { file, name } = report.reportXlsx(q);
@@ -531,6 +536,11 @@ async function api(req, res, url) {
       if (listDivisions().some((d) => d.name.toLowerCase() === name.toLowerCase())) throw new HttpError(409, 'Подразделение с таким названием уже есть');
       const me = db.prepare('SELECT * FROM users WHERE id = ?').get(user.id);
       const slug = createDivision(name, user.id);
+      // Начальные настройки нового подразделения — копия текущего (кроме названия), если не попросили стандартные.
+      if (body.copy_settings !== false) {
+        const rows = db.prepare("SELECT key, value FROM settings WHERE key NOT IN ('division_name')").all();
+        runInDivision(slug, () => { for (const r of rows) db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(r.key, r.value); });
+      }
       // В новом подразделении создаём руководителя с тем же логином и паролем — чтобы переключаться без входа.
       runInDivision(slug, () => {
         db.prepare('INSERT INTO users (login, name, position, phone, role, pass_hash, must_change_pw, created_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?)')

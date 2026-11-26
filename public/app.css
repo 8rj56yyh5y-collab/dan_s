@@ -443,3 +443,22 @@ textarea.input { min-height: 84px; }
   body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 }
 [hidden] { display: none !important; }
+
+/* настройки: переключатели и наборы */
+.opts { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr)); gap: 10px; }
+.opt { display: flex; gap: 12px; align-items: flex-start; padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; cursor: pointer; background: var(--surface); }
+.opt:hover { border-color: var(--line-strong); }
+.opt input { position: absolute; opacity: 0; pointer-events: none; }
+.opt-sw { flex: none; width: 36px; height: 21px; border-radius: 11px; background: var(--surface-3); position: relative; margin-top: 2px; transition: background .15s; }
+.opt-sw::after { content: ''; position: absolute; top: 2px; left: 2px; width: 17px; height: 17px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.25); transition: transform .15s; }
+.opt input:checked + .opt-sw { background: var(--ok); }
+.opt input:checked + .opt-sw::after { transform: translateX(15px); }
+.opt input:focus-visible + .opt-sw { outline: 2px solid var(--text); outline-offset: 2px; }
+.opt b { display: block; font-size: .92rem; }
+.opt small { display: block; color: var(--muted); font-size: .8rem; line-height: 1.35; margin-top: 2px; }
+.presets { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr)); gap: 10px; }
+.preset { text-align: left; padding: 12px 14px; border-radius: 12px; border: 1px solid var(--line); background: var(--surface-2); cursor: pointer; font: inherit; color: inherit; }
+.preset:hover { border-color: var(--line-strong); }
+.preset.on { border-color: var(--text); box-shadow: 0 0 0 1px var(--text); background: var(--surface); }
+.preset b { display: block; } .preset small { color: var(--muted); font-size: .8rem; }
+.save-bar { position: sticky; bottom: calc(12px + var(--tabbar-h)); justify-content: flex-end; gap: 14px; padding: 10px 14px; border-radius: 14px; background: color-mix(in srgb, var(--bg) 85%, transparent); backdrop-filter: blur(10px); border: 1px solid var(--line); }

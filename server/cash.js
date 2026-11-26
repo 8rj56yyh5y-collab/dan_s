@@ -20,7 +20,7 @@ const MANUAL = ['topup', 'expense', 'withdraw', 'recount'];
 const needHead = (user) => { if (user.role !== 'head') throw new HttpError(403, 'Только для руководителя'); };
 // Кассу ведёт руководитель или сотрудник с отметкой «Кассир». Видят её оба.
 const canCash = (user) => user.role === 'head' || !!user.cashier;
-const needCash = (user) => { if (!canCash(user)) throw new HttpError(403, 'Касса доступна руководителю и кассиру'); };
+const needCash = (user) => { L.needModule('mod_cash', 'Раздел «Касса»'); if (!canCash(user)) throw new HttpError(403, 'Касса доступна руководителю и кассиру'); };
 
 function opDate(body) {
   const d = str(body.date, 10);
