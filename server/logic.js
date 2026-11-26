@@ -167,8 +167,12 @@ function cashVoid(where, args, userId, reason) {
 
 // Чем оплачена покупка (если деньги не выдавались под отчёт).
 const PAY_FROM = { cash: 'Из кассы БХ', company: 'Картой / счётом компании', self: 'Своими деньгами — вернуть мне' };
+// Режим «всё через кассу» (по умолчанию): любой доход приходует в кассу, любой расход списывается из неё.
+const cashAll = () => getSettings().cash_all !== false;
 function payFromOf(r) {
-  if (r.issued_amount != null) return 'advance';
+  // Деньги выдавались из кассы под отчёт — касса уже уменьшилась при выдаче.
+  if (r.issued_amount != null && (r.issued_from_cash || !cashAll())) return 'advance';
+  if (cashAll()) return 'cash';
   if (PAY_FROM[r.paid_from]) return r.paid_from;
   return r.channel === 'offline' ? 'cash' : 'company';
 }
@@ -575,7 +579,8 @@ function addDelivery(user, rid, body) {
     const res = db.prepare(`INSERT INTO deliveries (request_id, user_id, amount, carrier, ttn, paid_by, comment, file_id, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(r.id, user.id, amount, carrier, ttn, paid_by, str(body.comment, 500), fileId, Date.now());
     const id = Number(res.lastInsertRowid);
-    if (paid_by === 'cash') cashInsert({ direction: 'out', kind: 'expense', amount, request_id: r.id, delivery_id: id, object: r.object, category: 'Доставка', comment: `Доставка из кассы: ${carrier}${ttn ? ` ТТН ${ttn}` : ''} · ${r.title}`.slice(0, 300), user_id: user.id });
+    const viaCash = paid_by === 'cash' || (cashAll() && !(paid_by === 'advance' && r.issued_from_cash));
+    if (viaCash) cashInsert({ direction: 'out', kind: 'expense', amount, request_id: r.id, delivery_id: id, object: r.object, category: 'Доставка', comment: `Доставка из кассы: ${carrier}${ttn ? ` ТТН ${ttn}` : ''} · ${r.title}`.slice(0, 300), user_id: user.id });
     logEvent(user.id, 'request', r.id, 'delivery_added', { amount, carrier, ttn, paid_by: PAID_BY[paid_by], after_close: r.status === 'closed' });
     return id;
   });
@@ -652,7 +657,7 @@ function headIncomeAction(user, id, action, body = {}) {
     if (inc.status !== 'new') throw new HttpError(409, 'Запись уже обработана');
     tx(() => {
       db.prepare("UPDATE incomes SET status='confirmed', head_comment=?, decided_at=?, decided_by=?, updated_at=? WHERE id=?").run(comment, now, user.id, now, inc.id);
-      if (inc.method === 'cash') cashInsert({ direction: 'in', kind: 'income', amount: inc.amount, income_id: inc.id, object: inc.object, category: inc.category, comment: inc.title.slice(0, 300), user_id: user.id, ts: Math.min(Date.parse(`${inc.date}T12:00:00`) || now, now) });
+      if (inc.method === 'cash' || cashAll()) cashInsert({ direction: 'in', kind: 'income', amount: inc.amount, income_id: inc.id, object: inc.object, category: inc.category, comment: inc.title.slice(0, 300), user_id: user.id, ts: Math.min(Date.parse(`${inc.date}T12:00:00`) || now, now) });
     });
   } else if (action === 'reject') {
     if (inc.status !== 'new') throw new HttpError(409, 'Запись уже обработана');
@@ -774,6 +779,7 @@ function flagsForRequest(r, items, files, settings = getSettings()) {
 }
 
 module.exports = {
+  cashAll,
   PAY_FROM, payFromOf, cashPayRequest,
   cashBalance, cashInsert, cashVoid, fm,
   DELIVERY_STATUSES, CARRIERS, PAID_BY, deliveriesOf, deliveryTotal, canAddDelivery, addDelivery, removeDelivery,

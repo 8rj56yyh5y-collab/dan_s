@@ -11,6 +11,7 @@ const A = require('./analytics');
 const ai = require('./ai');
 const cash = require('./cash');
 const tg = require('./telegram');
+const report = require('./report');
 
 const { HttpError, str } = L;
 const PORT = Number(process.env.PORT) || 3000;
@@ -306,6 +307,7 @@ function updateSettings(head, body) {
     objects: body.objects && list(body.objects, 200),
     units: body.units && list(body.units, 30),
     division_name: body.division_name !== undefined ? (str(body.division_name, 60) || null) : null,
+    cash_all: body.cash_all === undefined ? null : !!body.cash_all,
   };
   for (const [k, v] of Object.entries(plan)) {
     if (v == null || (Array.isArray(v) && !v.length)) continue;
@@ -484,6 +486,17 @@ async function api(req, res, url) {
     logEvent(user.id, 'export', null, 'exported', { type: 'cash' });
     return res.end(csv(cash.csvRows(q)));
   }
+  if ((p === '/api/cash/report' || p === '/api/cash/report.xlsx') && m === 'GET') {
+    if (!cash.canCash(user)) throw new HttpError(403, 'Касса доступна руководителю и кассиру');
+    if (p === '/api/cash/report') return ok(report.reportData(q));
+    const { file, name } = report.reportXlsx(q);
+    logEvent(user.id, 'export', null, 'exported', { type: 'cash_xlsx', from: q.from || '', to: q.to || '' });
+    res.writeHead(200, { ...SECURITY_HEADERS, 'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'Content-Length': file.length,
+      'Cache-Control': 'no-store', 'Content-Disposition': `attachment; filename="cash-report.xlsx"; filename*=UTF-8''${encodeURIComponent(name)}` });
+    return res.end(file);
+  }
+  if (p === '/api/cash/sync' && m === 'GET') return ok(cash.syncPreview(user));
+  if (p === '/api/cash/sync' && m === 'POST') return ok(cash.syncApply(user, body));
   if (p === '/api/cash/unpaid' && m === 'GET') return ok({ items: cash.unpaidPast(user) });
   if (p === '/api/cash/unpaid' && m === 'POST') return ok(cash.settlePast(user, body.ids, String(body.action || '')));
   if ((mt = p.match(/^\/api\/openings\/(\d+)\/to-cash$/)) && m === 'POST') { cash.moveOpeningToCash(user, mt[1]); return ok({ balance: L.cashBalance() }); }

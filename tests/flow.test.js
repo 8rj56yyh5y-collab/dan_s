@@ -41,6 +41,8 @@ test('полный цикл заявки и защита', async () => {
   const head = client(); const eng = client(); const other = client();
   assert.equal((await head('POST', '/api/login', { login: 'boss', password: 'wrong' })).status, 401);
   assert.equal((await head('POST', '/api/login', { login: 'boss', password: 'Boss12345' })).status, 200);
+  // этот сценарий проверяет режим «в кассу только наличные»; режим «всё через кассу» — в cash-all.test.js
+  await head('PUT', '/api/head/settings', { cash_all: false });
 
   // руководитель создаёт сотрудников; у них временный пароль
   const u1 = (await head('POST', '/api/head/users', { login: 'eng', name: 'Инженер', role: 'staff' })).data;
