@@ -1,1 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><rect width="512" height="512" rx="112" fill="#000000"/><rect x="96" y="96" width="320" height="320" rx="84" fill="#c9f26a"/><text x="256" y="300" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-weight="800" font-size="150" fill="#11210c" letter-spacing="-8">БХ</text></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" aria-label="Максимет"><!-- Знак MAXIMET: «М» из стальных двутавров, в вырезе — раскалённый терикон -->
+<rect width="64" height="64" rx="14" fill="#16181B"/>
+<path d="M11 13h12v4h-3.5v30H23v4H11v-4h3.5V17H11z" fill="#E8E9EB"/><path d="M41 13h12v4h-3.5v30H53v4H41v-4h3.5V17H41z" fill="#E8E9EB"/>
+<path d="M19.5 17 32 34.5 44.5 17h-5.6L32 26.7 25.1 17z" fill="#E8E9EB"/><path d="M22.5 51 32 37.5 41.5 51z" fill="#FF5A1F"/><path d="M29.6 41 32 37.5 34.4 41z" fill="#FFB36B"/>
+</svg>

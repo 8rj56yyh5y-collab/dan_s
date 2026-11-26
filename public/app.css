@@ -1,5 +1,5 @@
 /* =====================================================================
-   БХ Учёт — дизайн-система v2. Две темы: светлая (белый фон) и тёмная (чёрный фон).
+   Максимет — дизайн-система v2. Две темы: светлая (белый фон) и тёмная (чёрный фон).
    Атрибут data-theme на <html>; по умолчанию — как в системе. Все цвета — переменные.
    ===================================================================== */
 :root, [data-theme="light"] {
@@ -462,3 +462,7 @@ textarea.input { min-height: 84px; }
 .preset.on { border-color: var(--text); box-shadow: 0 0 0 1px var(--text); background: var(--surface); }
 .preset b { display: block; } .preset small { color: var(--muted); font-size: .8rem; }
 .save-bar { position: sticky; bottom: calc(12px + var(--tabbar-h)); justify-content: flex-end; gap: 14px; padding: 10px 14px; border-radius: 14px; background: color-mix(in srgb, var(--bg) 85%, transparent); backdrop-filter: blur(10px); border: 1px solid var(--line); }
+
+/* знак MAXIMET в шапке */
+.brand-mark.logo { background: none; padding: 0; overflow: hidden; }
+.brand-mark.logo svg { width: 100%; height: 100%; display: block; }

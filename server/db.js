@@ -1,5 +1,5 @@
 'use strict';
-// База данных БХ Учёт — встроенный SQLite из Node 22 (node:sqlite), без внешних зависимостей.
+// База данных Максимет — встроенный SQLite из Node 22 (node:sqlite), без внешних зависимостей.
 const fs = require('node:fs');
 const path = require('node:path');
 const { DatabaseSync } = require('node:sqlite');
