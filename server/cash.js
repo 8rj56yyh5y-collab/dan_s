@@ -126,7 +126,7 @@ function report(q = {}) {
     items: rows.reverse().map((o) => ({
       id: o.id, ts: o.ts, direction: o.direction, kind: o.kind, kind_text: KINDS[o.kind].title, amount: o.amount, category: o.category, object: o.object,
       comment: o.comment, request_id: o.request_id, request_number: o.request_id ? L.reqNumber(o.request_id) : null, request_title: o.request_title,
-      income_id: o.income_id, income_number: o.income_id ? L.incNumber(o.income_id) : null, income_title: o.income_title, file_id: o.file_id,
+      income_id: o.income_id, income_number: o.income_id ? L.incNumber(o.income_id) : null, income_title: o.income_title, file_id: o.file_id, delivery_id: o.delivery_id,
       user_name: o.user_name, balance_after: after.get(o.id), manual: MANUAL.includes(o.kind),
       removed_at: o.removed_at, removed_name: o.removed_name, remove_reason: o.remove_reason,
     })),
@@ -172,6 +172,107 @@ function settlePast(user, ids, action) {
     }
     return { count: n, sum: round2(sum), balance: L.cashBalance() };
   });
+}
+
+// ---------- сверка кассы за весь период ----------
+// Находит всё, что ещё не прошло через кассу: подтверждённые доходы, проведённые заявки, доставку.
+// То, что уже есть в кассе (выдача под отчёт из кассы, уже списанные расходы, доходы), второй раз не попадает.
+function syncCandidates() {
+  const activeOp = (where) => `EXISTS (SELECT 1 FROM cash_ops c WHERE c.removed_at IS NULL AND ${where})`;
+  const incomes = db.prepare(`SELECT i.*, u.name user_name FROM incomes i JOIN users u ON u.id = i.user_id
+    WHERE i.status = 'confirmed' AND NOT ${activeOp("c.kind = 'income' AND c.income_id = i.id")} ORDER BY i.date`).all()
+    .map((i) => ({ ...i, ts: Math.min(Date.parse(`${i.date}T12:00:00`) || i.created_at, i.decided_at || Date.now()) }));
+  const requests = db.prepare(`SELECT r.*, u.name user_name FROM requests r JOIN users u ON u.id = r.user_id
+    WHERE r.status = 'closed' AND r.actual_total > 0 AND COALESCE(r.issued_from_cash, 0) = 0
+      AND NOT ${activeOp("c.kind = 'expense' AND c.request_id = r.id AND c.delivery_id IS NULL")} ORDER BY r.closed_at`).all();
+  const deliveries = db.prepare(`SELECT d.*, r.title, r.object, r.status req_status, r.closed_at, r.issued_from_cash, u.name user_name
+    FROM deliveries d JOIN requests r ON r.id = d.request_id JOIN users u ON u.id = d.user_id
+    WHERE d.removed_at IS NULL AND r.status NOT IN ('rejected','cancelled')
+      AND NOT (d.paid_by = 'advance' AND COALESCE(r.issued_from_cash, 0) = 1)
+      AND NOT ${activeOp('c.delivery_id = d.id')} ORDER BY d.created_at`).all()
+    .map((d) => ({ ...d, ts: Math.max(d.created_at, d.closed_at || 0) }));
+  // Начальные остатки, внесённые через «Начальный остаток», — их можно заменить одним остатком на начало учёта.
+  const openings = db.prepare(`SELECT c.* FROM cash_ops c WHERE c.removed_at IS NULL AND c.kind = 'topup'
+    AND (c.id IN (SELECT cash_op_id FROM openings WHERE status = 'approved' AND cash_op_id IS NOT NULL) OR c.comment LIKE 'Остаток на начало учёта%')`).all();
+  return { incomes, requests, deliveries, openings };
+}
+function syncPreview(user) {
+  needHead(user);
+  const c = syncCandidates();
+  const sum = (arr, f = (x) => x.amount) => round2(arr.reduce((t, x) => t + f(x), 0));
+  const balance = L.cashBalance();
+  const inc = sum(c.incomes); const req = sum(c.requests, (x) => x.actual_total); const del = sum(c.deliveries);
+  const open = sum(c.openings);
+  return {
+    balance, cash_all: L.cashAll(),
+    incomes: { n: c.incomes.length, s: inc }, requests: { n: c.requests.length, s: req }, deliveries: { n: c.deliveries.length, s: del },
+    openings: { n: c.openings.length, s: open },
+    balance_after: round2(balance + inc - req - del),
+    // остаток без внесённых начальных остатков — от него считаем «остаток на начало», если известна сумма сейчас
+    balance_without_openings: round2(balance + inc - req - del - open),
+    first_date: syncPreviewFirst(),
+    items: [
+      ...c.incomes.map((x) => ({ ts: x.ts, dir: 'in', amount: x.amount, title: x.title, source: L.incNumber(x.id), user_name: x.user_name })),
+      ...c.requests.map((x) => ({ ts: x.closed_at, dir: 'out', amount: x.actual_total, title: x.title, source: L.reqNumber(x.id), user_name: x.user_name })),
+      ...c.deliveries.map((x) => ({ ts: x.ts, dir: 'out', amount: x.amount, title: `Доставка: ${x.title}`, source: L.reqNumber(x.request_id), user_name: x.user_name })),
+    ].sort((a, b) => a.ts - b.ts),
+  };
+}
+// mode: 'start' — amount это остаток на начало учёта; 'now' — amount это сколько реально в кассе сейчас; 'keep' — начальные остатки не трогаем.
+function syncApply(user, body) {
+  needHead(user);
+  const mode = ['start', 'now', 'keep'].includes(body.mode) ? body.mode : 'keep';
+  const startDate = isDate(str(body.start_date, 10)) ? str(body.start_date, 10) : null;
+  let amount = null;
+  if (mode !== 'keep') {
+    amount = money(body.amount, { max: 1e9 });
+    if (amount == null) throw new HttpError(400, mode === 'now' ? 'Укажите, сколько сейчас реально в кассе' : 'Укажите остаток на начало учёта');
+  }
+  return tx(() => {
+    const c = syncCandidates();
+    let n = 0;
+    for (const i of c.incomes) {
+      L.cashInsert({ direction: 'in', kind: 'income', amount: i.amount, income_id: i.id, object: i.object, category: i.category, comment: i.title.slice(0, 300), user_id: user.id, ts: i.ts }); n++;
+    }
+    for (const r of c.requests) {
+      db.prepare("UPDATE requests SET paid_from = 'cash' WHERE id = ?").run(r.id);
+      L.cashInsert({ direction: 'out', kind: 'expense', amount: r.actual_total, request_id: r.id, object: r.object, category: r.category,
+        comment: `Оплачено из кассы: ${r.title}`.slice(0, 300), user_id: user.id, ts: r.closed_at }); n++;
+    }
+    for (const d of c.deliveries) {
+      L.cashInsert({ direction: 'out', kind: 'expense', amount: d.amount, request_id: d.request_id, delivery_id: d.id, object: d.object, category: 'Доставка',
+        comment: `Доставка: ${d.carrier || ''}${d.ttn ? ` ТТН ${d.ttn}` : ''} · ${d.title}`.slice(0, 300), user_id: user.id, ts: d.ts }); n++;
+    }
+    let startOp = null; let start = null;
+    if (mode !== 'keep') {
+      // Начальные остатки заменяются одним «остатком на начало учёта», датированным самым началом.
+      const openIds = c.openings.map((o) => o.id);
+      for (const id of openIds) {
+        db.prepare('UPDATE cash_ops SET removed_at = ?, removed_by = ?, remove_reason = ? WHERE id = ?').run(Date.now(), user.id, 'Заменено остатком на начало учёта', id);
+      }
+      start = mode === 'start' ? amount : round2(amount - L.cashBalance());
+      if (start < 0) throw new HttpError(400, `Получается отрицательный остаток на начало учёта (${fm(start)}): расходов в истории больше, чем доходов и сумма в кассе сейчас. Проверьте сумму или проведённые заявки.`);
+      const first = startDate || syncPreviewFirst();
+      const ts = Date.parse(`${first}T00:00:01`);
+      if (start > 0) {
+        startOp = L.cashInsert({ direction: 'in', kind: 'topup', amount: start, comment: `Остаток на начало учёта (${first})`, user_id: user.id, ts });
+        if (openIds.length) db.prepare(`UPDATE openings SET cash_op_id = ? WHERE cash_op_id IN (${openIds.map(() => '?').join(',')})`).run(startOp, ...openIds);
+      }
+    }
+    db.prepare("INSERT INTO settings (key, value) VALUES ('cash_all', 'true') ON CONFLICT(key) DO UPDATE SET value = 'true'").run();
+    const balance = L.cashBalance();
+    logEvent(user.id, 'cash', startOp, 'cash_synced', { operations: n, start, mode, balance });
+    return { operations: n, start, balance };
+  });
+}
+// Самая ранняя дата учёта (для «остатка на начало»).
+function syncPreviewFirst() {
+  const m = Math.min(
+    db.prepare("SELECT MIN(ts) m FROM cash_ops WHERE removed_at IS NULL AND NOT (kind = 'topup' AND comment LIKE 'Остаток на начало учёта%')").get().m || Infinity,
+    db.prepare("SELECT MIN(closed_at) m FROM requests WHERE status = 'closed'").get().m || Infinity,
+    Date.parse(`${db.prepare("SELECT MIN(date) m FROM incomes WHERE status = 'confirmed'").get().m || '9999-01-01'}T12:00:00`),
+    Date.now());
+  return new Date(m - 864e5).toISOString().slice(0, 10);
 }
 
 // ---------- начальный остаток (по согласованию) ----------
@@ -260,4 +361,4 @@ function listOpenings(user) {
     .map((o) => ({ ...o, target_text: TARGETS[o.target] }));
 }
 
-module.exports = { KINDS, MANUAL, TARGETS, canCash, moveOpeningToCash, unpaidPast, settlePast, createOp, removeOp, report, csvRows, createOpening, decideOpening, listOpenings };
+module.exports = { KINDS, MANUAL, TARGETS, canCash, moveOpeningToCash, unpaidPast, settlePast, syncPreview, syncApply, createOp, removeOp, report, csvRows, createOpening, decideOpening, listOpenings };

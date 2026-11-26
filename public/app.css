@@ -429,3 +429,17 @@ textarea.input { min-height: 84px; }
 .div-li:not(:disabled):hover { background: var(--surface-2) !important; }
 .brand > span:nth-child(2) { min-width: 0; }
 .brand > span:last-child > span, .brand-switch > span:nth-child(2) > span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* отчёт по кассе: экран и печать */
+.report-t td:nth-child(3) { min-width: 220px; }
+@media print {
+  .main { padding: 0 !important; max-width: none; }
+  .report .card, .report .kpi { box-shadow: none; break-inside: avoid; }
+  .report .table-wrap { overflow: visible; }
+  .report-t { font-size: 10px; }
+  .report-t th, .report-t td { padding: 4px 6px !important; }
+  .report .crumbs, .toast, .tip { display: none !important; }
+  .report .grid-2 { grid-template-columns: 1fr 1fr; }
+  body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+}
+[hidden] { display: none !important; }
