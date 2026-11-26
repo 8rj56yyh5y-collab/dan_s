@@ -101,7 +101,7 @@ function report(q = {}) {
   const opening = round2(db.prepare(`SELECT COALESCE(SUM(${signed}),0) s FROM cash_ops WHERE removed_at IS NULL AND ts < ?`).get(r.fromTs).s);
   const where = ['c.ts BETWEEN ? AND ?']; const args = [r.fromTs, r.toTs];
   if (q.kind && KINDS[q.kind]) { where.push('c.kind = ?'); args.push(q.kind); }
-  const rows = db.prepare(`SELECT c.*, u.name user_name, rm.name removed_name, rq.title request_title, i.title income_title
+  const rows = db.prepare(`SELECT c.*, u.name user_name, rm.name removed_name, rq.title request_title, i.title income_title, i.kind income_kind
     FROM cash_ops c JOIN users u ON u.id = c.user_id LEFT JOIN users rm ON rm.id = c.removed_by
     LEFT JOIN requests rq ON rq.id = c.request_id LEFT JOIN incomes i ON i.id = c.income_id
     WHERE ${where.join(' AND ')} ORDER BY c.ts, c.id`).all(...args);
@@ -124,7 +124,7 @@ function report(q = {}) {
     totals: { in: round2(totals.in), out: round2(totals.out), by_kind: totals.by_kind },
     under_report: { s: round2(underReport.s), n: underReport.n },
     items: rows.reverse().map((o) => ({
-      id: o.id, ts: o.ts, direction: o.direction, kind: o.kind, kind_text: KINDS[o.kind].title, amount: o.amount, category: o.category, object: o.object,
+      id: o.id, ts: o.ts, direction: o.direction, kind: o.kind, kind_text: o.income_kind === 'funding' ? 'Приход на нужды' : KINDS[o.kind].title, income_kind: o.income_kind, amount: o.amount, category: o.category, object: o.object,
       comment: o.comment, request_id: o.request_id, request_number: o.request_id ? L.reqNumber(o.request_id) : null, request_title: o.request_title,
       income_id: o.income_id, income_number: o.income_id ? L.incNumber(o.income_id) : null, income_title: o.income_title, file_id: o.file_id, delivery_id: o.delivery_id,
       user_name: o.user_name, balance_after: after.get(o.id), manual: MANUAL.includes(o.kind),

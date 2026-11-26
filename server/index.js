@@ -180,18 +180,19 @@ function listIncomes(user, q) {
   const where = []; const args = [];
   if (user.role !== 'head') { where.push('i.user_id = ?'); args.push(user.id); }
   if (['new', 'confirmed', 'rejected'].includes(q.status)) { where.push('i.status = ?'); args.push(q.status); }
+  if (['income', 'funding'].includes(q.kind)) { where.push('i.kind = ?'); args.push(q.kind); }
   if (L.isDate(q.from || '')) { where.push('i.date >= ?'); args.push(q.from); }
   if (L.isDate(q.to || '')) { where.push('i.date <= ?'); args.push(q.to); }
   if (q.q) { const t = `%${String(q.q).toLowerCase().slice(0, 80)}%`; where.push('(LOWER(i.title) LIKE ? OR LOWER(i.client) LIKE ?)'); args.push(t, t); }
   const rows = db.prepare(`SELECT i.*, u.name user_name, (SELECT COUNT(*) FROM files f WHERE f.income_id = i.id AND f.kind != 'removed') files
     FROM incomes i JOIN users u ON u.id = i.user_id ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY i.date DESC, i.id DESC LIMIT 500`).all(...args);
-  const sum = rows.filter((r) => r.status === 'confirmed').reduce((s, r) => s + r.amount, 0);
-  return { items: rows.map((r) => ({ ...r, number: L.incNumber(r.id), status_text: L.INCOME_STATUS[r.status] })), confirmed_sum: L.round2(sum) };
+  const sum = (k) => rows.filter((r) => r.status === 'confirmed' && r.kind === k).reduce((s, r) => s + r.amount, 0);
+  return { items: rows.map((r) => ({ ...r, number: L.incNumber(r.id), status_text: L.INCOME_STATUS[r.status], kind_text: L.INCOME_KIND[r.kind] })), confirmed_sum: L.round2(sum('income')), funding_sum: L.round2(sum('funding')) };
 }
 function incomeDetail(user, id) {
   const inc = L.incomeFor(user, id);
   return {
-    ...inc, number: L.incNumber(inc.id), status_text: L.INCOME_STATUS[inc.status], user_name: userName(inc.user_id), decided_by_name: userName(inc.decided_by),
+    ...inc, number: L.incNumber(inc.id), status_text: L.INCOME_STATUS[inc.status], kind_text: L.INCOME_KIND[inc.kind], user_name: userName(inc.user_id), decided_by_name: userName(inc.decided_by),
     files: filesOf('income_id', inc.id).map((f) => ({ ...f, sha256: undefined })), events: eventsOf('income', inc.id), corrections: correctionsOf('income', inc.id),
     mine: inc.user_id === user.id, can_edit: inc.user_id === user.id && inc.status === 'new' && Date.now() < inc.edit_until, now: Date.now(),
   };
@@ -202,7 +203,7 @@ function staffHome(user) {
   const month = new Date(); const mStart = new Date(month.getFullYear(), month.getMonth(), 1).getTime();
   const spent = db.prepare("SELECT COALESCE(SUM(actual_total),0) s, COUNT(*) n FROM requests WHERE user_id=? AND status='closed' AND closed_at >= ?").get(user.id, mStart);
   spent.s += db.prepare('SELECT COALESCE(SUM(amount),0) s FROM delivery_costs WHERE req_user = ? AND ts >= ?').get(user.id, mStart).s;
-  const inc = db.prepare("SELECT COALESCE(SUM(amount),0) s, COUNT(*) n FROM incomes WHERE user_id=? AND status='confirmed' AND date >= ?").get(user.id, new Date(mStart).toISOString().slice(0, 10));
+  const inc = db.prepare("SELECT COALESCE(SUM(amount),0) s, COUNT(*) n FROM incomes WHERE user_id=? AND status='confirmed' AND kind = 'income' AND date >= ?").get(user.id, new Date(mStart).toISOString().slice(0, 10));
   const adv = A.advances(user.id)[0];
   return {
     todo: mine(['revision', 'approved', 'issued', 'report_revision']),
@@ -331,8 +332,8 @@ function exportCsv(q) {
   const nf = (n) => (n == null ? '' : String(n).replace('.', ','));
   if (q.type === 'incomes') {
     const rows = listIncomes({ role: 'head' }, q).items;
-    return csv([['Номер', 'Дата', 'Что', 'Клиент', 'Объект', 'Категория', 'Сумма', 'Оплата', 'Статус', 'Внёс'],
-      ...rows.map((r) => [r.number, r.date, r.title, r.client, r.object, r.category, nf(r.amount), r.method, r.status_text, r.user_name])]);
+    return csv([['Номер', 'Вид', 'Дата', 'Что', 'Клиент', 'Объект', 'Категория', 'Сумма', 'Оплата', 'Статус', 'Внёс'],
+      ...rows.map((r) => [r.number, r.kind_text, r.date, r.title, r.client, r.object, r.category, nf(r.amount), r.method, r.status_text, r.user_name])]);
   }
   if (q.type === 'cash') return csv(cash.csvRows(q));
   if (q.type === 'money') {

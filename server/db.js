@@ -250,6 +250,8 @@ function setupDb(db) {
     }
   }
   addColumn('requests', 'issued_from_cash', 'issued_from_cash INTEGER NOT NULL DEFAULT 0');
+  // Поступление: income — доход (продажа, услуга); funding — приход на нужды (деньги на покупки, зарплаты), не доход.
+  addColumn('incomes', 'kind', "kind TEXT NOT NULL DEFAULT 'income'");
 }
 
 // ---------- подразделения ----------

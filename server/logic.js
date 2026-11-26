@@ -639,22 +639,25 @@ function incomeFields(body, settings) {
     amount: money(body.amount, { allowZero: false }),
     method: ['cash', 'card', 'account'].includes(body.method) ? body.method : 'account',
     comment: str(body.comment, 1000),
+    kind: body.kind === 'funding' ? 'funding' : 'income',
   };
   if (!f.date) throw new HttpError(400, 'Укажите дату');
-  if (!f.title) throw new HttpError(400, 'Напишите, что продали или за что оплата');
+  if (!f.title) throw new HttpError(400, f.kind === 'funding' ? 'Напишите, на что деньги' : 'Напишите, что продали или за что оплата');
   if (f.amount == null) throw new HttpError(400, 'Укажите сумму');
-  checkObjectCategory(f, settings, settings.income_categories);
+  // Приход на нужды — не доход: категория доходов и обязательные поля к нему не относятся.
+  if (f.kind === 'funding') { f.category = ''; checkObjectCategory(f, { ...settings, require_object: false, require_category: false }, []); }
+  else checkObjectCategory(f, settings, settings.income_categories);
   return f;
 }
 function createIncome(user, body) {
   needModule('mod_incomes', 'Раздел «Доходы»');
   const f = incomeFields(body, getSettings());
   const now = Date.now();
-  const r = db.prepare(`INSERT INTO incomes (date, title, client, object, category, amount, method, comment, user_id, edit_until, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(f.date, f.title, f.client, f.object, f.category, f.amount, f.method, f.comment, user.id, now + editMs(), now, now);
+  const r = db.prepare(`INSERT INTO incomes (date, title, client, object, category, amount, method, comment, kind, user_id, edit_until, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(f.date, f.title, f.client, f.object, f.category, f.amount, f.method, f.comment, f.kind, user.id, now + editMs(), now, now);
   const id = Number(r.lastInsertRowid);
-  logEvent(user.id, 'income', id, 'created', { amount: f.amount });
+  logEvent(user.id, 'income', id, 'created', { amount: f.amount, kind: INCOME_KIND[f.kind] });
   // Без подтверждения руководителем доход сразу учитывается.
   if (!opt('income_confirm')) confirmIncome(user, loadIncome(id), 'Автоматически: подтверждение выключено в настройках', true);
   return id;
@@ -666,17 +669,18 @@ function updateIncome(user, id, body) {
   const f = incomeFields({ ...inc, ...body }, getSettings());
   const changes = diffFields(inc, f, Object.keys(f));
   if (!changes.length) return { changed: false };
-  db.prepare('UPDATE incomes SET date=?, title=?, client=?, object=?, category=?, amount=?, method=?, comment=?, updated_at=? WHERE id=?')
-    .run(f.date, f.title, f.client, f.object, f.category, f.amount, f.method, f.comment, Date.now(), inc.id);
+  db.prepare('UPDATE incomes SET date=?, title=?, client=?, object=?, category=?, amount=?, method=?, comment=?, kind=?, updated_at=? WHERE id=?')
+    .run(f.date, f.title, f.client, f.object, f.category, f.amount, f.method, f.comment, f.kind, Date.now(), inc.id);
   logEvent(user.id, 'income', inc.id, 'edited', { changes });
   return { changed: true };
 }
 function confirmIncome(user, inc, comment, auto = false) {
   const now = Date.now();
   db.prepare("UPDATE incomes SET status='confirmed', head_comment=?, decided_at=?, decided_by=?, updated_at=? WHERE id=?").run(comment, now, auto ? null : user.id, now, inc.id);
-  if ((inc.method === 'cash' && opt('mod_cash')) || cashAll()) cashInsert({ direction: 'in', kind: 'income', amount: inc.amount, income_id: inc.id, object: inc.object, category: inc.category, comment: inc.title.slice(0, 300), user_id: user.id, ts: Math.min(Date.parse(`${inc.date}T12:00:00`) || now, now) });
+  if ((inc.method === 'cash' && opt('mod_cash')) || cashAll()) cashInsert({ direction: 'in', kind: 'income', amount: inc.amount, income_id: inc.id, object: inc.object, category: inc.category, comment: `${inc.kind === 'funding' ? 'Приход на нужды: ' : ''}${inc.title}`.slice(0, 300), user_id: user.id, ts: Math.min(Date.parse(`${inc.date}T12:00:00`) || now, now) });
   if (auto) logEvent(null, 'income', inc.id, 'confirmed', { comment, auto: true });
 }
+const INCOME_KIND = { income: 'Доход', funding: 'Приход на нужды (не доход)' };
 function headIncomeAction(user, id, action, body = {}) {
   if (user.role !== 'head') throw new HttpError(403, 'Только для руководителя');
   const inc = loadIncome(id);
@@ -691,6 +695,14 @@ function headIncomeAction(user, id, action, body = {}) {
     db.prepare("UPDATE incomes SET status='rejected', head_comment=?, decided_at=?, decided_by=?, updated_at=? WHERE id=?").run(comment, now, user.id, now, inc.id);
   } else if (action === 'comment') {
     if (!comment) throw new HttpError(400, 'Пустой комментарий');
+  } else if (action === 'set_kind') {
+    // Руководитель переводит запись: доход ⇄ приход на нужды (в любом статусе). Касса не меняется — меняется только учёт прибыли.
+    const kind = body.kind === 'funding' ? 'funding' : 'income';
+    if (kind === inc.kind) return;
+    db.prepare('UPDATE incomes SET kind = ?, category = ?, updated_at = ? WHERE id = ?').run(kind, kind === 'funding' ? '' : inc.category, now, inc.id);
+    db.prepare("UPDATE cash_ops SET comment = ? WHERE income_id = ? AND kind = 'income'").run(`${kind === 'funding' ? 'Приход на нужды: ' : ''}${inc.title}`.slice(0, 300), inc.id);
+    logEvent(user.id, 'income', inc.id, 'kind_changed', { changes: [{ field: 'Вид', from: INCOME_KIND[inc.kind], to: INCOME_KIND[kind] }], comment });
+    return;
   } else throw new HttpError(400, 'Неизвестное действие');
   logEvent(user.id, 'income', inc.id, action === 'confirm' ? 'confirmed' : action === 'reject' ? 'rejected' : 'comment', { comment });
 }
@@ -805,6 +817,7 @@ function flagsForRequest(r, items, files, settings = getSettings()) {
 }
 
 module.exports = {
+  INCOME_KIND,
   opt, needModule,
   cashAll,
   PAY_FROM, payFromOf, cashPayRequest,

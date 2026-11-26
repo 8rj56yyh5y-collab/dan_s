@@ -395,7 +395,7 @@
   async function pageStaffHome() {
     const h = await api('/api/home');
     const adv = h.advance.balance;
-    return `${head(`Здравствуйте, ${esc(S.me.name.split(' ')[0])}`, 'Ваши заявки, отчёты и деньги под отчёт', `<a class="btn" href="#/new">${ic('plus')} Новая заявка</a>${so('mod_incomes') ? `<a class="btn soft" href="#/new-income">${ic('coins')} Внести доход</a>` : ''}${so('mod_cash') || so('mod_money') ? `<button class="btn soft" data-opening>${ic('wallet')} Начальный остаток</button>` : ''}`)}
+    return `${head(`Здравствуйте, ${esc(S.me.name.split(' ')[0])}`, 'Ваши заявки, отчёты и деньги под отчёт', `<a class="btn" href="#/new">${ic('plus')} Новая заявка</a>${so('mod_incomes') ? `<a class="btn soft" href="#/new-income">${ic('coins')} Доход / приход</a>` : ''}${so('mod_cash') || so('mod_money') ? `<button class="btn soft" data-opening>${ic('wallet')} Начальный остаток</button>` : ''}`)}
       <div class="grid-kpi">
         ${h.cash_balance != null ? cashTile(h.cash_balance, h.openings.filter((x) => x.status === 'pending' && x.target === 'cash')) : ''}
         ${kpi('Нужно сделать', h.todo.length, h.todo.length ? 'отчёт, покупка или доработка' : 'всё сделано', h.todo.length ? 'hl' : '')}
@@ -757,7 +757,7 @@
       ${canDelete ? `<button class="x" data-rm="${f.id}" aria-label="Убрать файл">${ic('x', 15)}</button>` : ''}</div>`;
   }
   const EV = {
-    created: ['Заявка создана', 'plus', 'hl'], edited: ['Изменена', 'edit', 'warn'], edited_after_approval: ['Изменена после согласования', 'edit', 'bad'],
+    kind_changed: ['Изменён вид: доход / приход', 'refresh', 'warn'], created: ['Заявка создана', 'plus', 'hl'], edited: ['Изменена', 'edit', 'warn'], edited_after_approval: ['Изменена после согласования', 'edit', 'bad'],
     approved: ['Согласовано', 'checkCircle', 'hl'], rejected: ['Отклонено', 'xCircle', 'bad'], returned: ['Возвращено на доработку', 'refresh', 'warn'],
     resubmitted: ['Отправлено повторно', 'send', ''], issued: ['Деньги выданы', 'wallet', 'hl'], report_draft: ['Черновик отчёта', 'edit', ''],
     report_submitted: ['Отчёт отправлен', 'send', 'hl'], report_edited: ['Отчёт исправлен после отправки', 'edit', 'warn'], report_returned: ['Отчёт возвращён на доработку', 'refresh', 'warn'],
@@ -1191,50 +1191,70 @@
     const q = r.q;
     const data = await api(`/api/incomes?${new URLSearchParams(q)}`);
     const link = (s) => `#/incomes?${new URLSearchParams({ ...q, status: s })}`;
-    const rows = data.items.map((i) => `<tr class="click" data-href="#/income/${i.id}"><td><b>${esc(i.title)}</b><div class="faint xs">${esc(i.number)}${i.client ? ` · ${esc(i.client)}` : ''}${i.object ? ` · ${esc(i.object)}` : ''}</div></td>
-      <td class="hide-m">${esc(i.date)}</td>${isHead() ? `<td class="hide-m">${esc(i.user_name)}</td>` : ''}<td class="hide-m">${METHOD[i.method]}</td><td>${pill(i.status, i.status_text)}</td><td class="r num"><b class="${i.status === 'confirmed' ? 'up' : ''}">${money(i.amount)}</b></td></tr>`).join('');
-    return `${head('Доходы', `Подтверждено: <b>${money(data.confirmed_sum)}</b> из ${data.items.length} записей`, `${isHead() ? `<a class="btn soft" href="/api/head/export?type=incomes" download>${ic('download')} CSV</a>` : ''}<a class="btn" href="#/new-income">${ic('plus')} Внести доход</a>`)}
+    const rows = data.items.map((i) => `<tr class="click" data-href="#/income/${i.id}"><td><b>${esc(i.title)}</b>${i.kind === 'funding' ? ' <span class="tag">приход · не доход</span>' : ''}<div class="faint xs">${esc(i.number)}${i.client ? ` · ${esc(i.client)}` : ''}${i.object ? ` · ${esc(i.object)}` : ''}</div></td>
+      <td class="hide-m">${esc(i.date)}</td>${isHead() ? `<td class="hide-m">${esc(i.user_name)}</td>` : ''}<td class="hide-m">${METHOD[i.method]}</td><td>${pill(i.status, i.status_text)}</td><td class="r num"><b class="${i.status === 'confirmed' && i.kind !== 'funding' ? 'up' : ''}">${money(i.amount)}</b></td></tr>`).join('');
+    const klink = (k) => `#/incomes?${new URLSearchParams({ ...q, kind: k })}`;
+    return `${head('Доходы и приходы', `Доходы: <b>${money(data.confirmed_sum)}</b> · приходы на нужды (не доход): <b>${money(data.funding_sum)}</b> · записей ${data.items.length}`, `${isHead() ? `<a class="btn soft" href="/api/head/export?type=incomes" download>${ic('download')} CSV</a>` : ''}<a class="btn" href="#/new-income">${ic('plus')} Внести</a>`)}
+      <div class="tabs" style="margin-bottom:10px">${[['', 'Всё'], ['income', 'Доходы'], ['funding', 'Приходы на нужды']].map(([k, t]) => `<a href="${klink(k)}" class="${(q.kind || '') === k ? 'on' : ''}">${t}</a>`).join('')}</div>
       <div class="tabs" style="margin-bottom:14px">${[['', 'Все'], ['new', 'Ждут подтверждения'], ['confirmed', 'Подтверждено'], ['rejected', 'Отклонено']].map(([s, t]) => `<a href="${link(s)}" class="${(q.status || '') === s ? 'on' : ''}">${t}</a>`).join('')}</div>
       <form class="filters" id="if"><input class="input" name="q" placeholder="Поиск: что продали, клиент" value="${esc(q.q || '')}"><input class="input" type="date" name="from" value="${esc(q.from || '')}" style="flex:0 1 160px"><input class="input" type="date" name="to" value="${esc(q.to || '')}" style="flex:0 1 160px"></form>
-      <div class="card flush">${rows ? `<div class="table-wrap"><table class="t resp"><thead><tr><th>Доход</th><th class="hide-m">Дата</th>${isHead() ? '<th class="hide-m">Внёс</th>' : ''}<th class="hide-m">Оплата</th><th>Статус</th><th class="r">Сумма</th></tr></thead><tbody>${rows}</tbody></table></div>`
-        : `<div class="empty">${ic('coins', 32)}Доходов пока нет<p><a class="btn" href="#/new-income">Внести первый</a></p></div>`}</div>`;
+      <div class="card flush">${rows ? `<div class="table-wrap"><table class="t resp"><thead><tr><th>Запись</th><th class="hide-m">Дата</th>${isHead() ? '<th class="hide-m">Внёс</th>' : ''}<th class="hide-m">Оплата</th><th>Статус</th><th class="r">Сумма</th></tr></thead><tbody>${rows}</tbody></table></div>`
+        : `<div class="empty">${ic('coins', 32)}Записей пока нет<p><a class="btn" href="#/new-income">Внести первую</a></p></div>`}</div>`;
   }
   pageIncomes.after = (r) => {
     const f = $('#if'); let t;
-    f.oninput = () => { clearTimeout(t); t = setTimeout(() => { const p = new URLSearchParams(); for (const el of f.elements) if (el.value) p.set(el.name, el.value); if (r.q.status) p.set('status', r.q.status); go(`#/incomes?${p}`); }, 450); };
+    f.oninput = () => { clearTimeout(t); t = setTimeout(() => { const p = new URLSearchParams(); for (const el of f.elements) if (el.value) p.set(el.name, el.value); if (r.q.status) p.set('status', r.q.status); if (r.q.kind) p.set('kind', r.q.kind); go(`#/incomes?${p}`); }, 450); };
     f.onsubmit = (e) => e.preventDefault();
     $$('tr[data-href]').forEach((tr) => tr.onclick = () => go(tr.dataset.href));
   };
+  // Доход — заработанные деньги (продажа, услуга). Приход на нужды — деньги, выданные на покупки и зарплаты: в кассу идут, в доходы — нет.
+  const INC_KIND = {
+    income: { t: 'Доход', h: 'Продажа, услуга, оплата от клиента — заработанные деньги', title: 'Что продали / за что оплата', ph: 'Например: Навес 6×4 м, изготовление', client: 'Клиент', cph: 'Кто заплатил' },
+    funding: { t: 'Приход на нужды', h: 'Деньги на материалы, покупки, зарплаты. Это не доход — в прибыль и расходы не входит', title: 'На что деньги', ph: 'Например: на материалы и зарплаты, ноябрь', client: 'От кого', cph: 'Например: из офиса, от директора' },
+  };
   function incomeForm(i = null) {
-    const s = S.settings;
-    return `<form id="incf" class="card stack" novalidate>
+    const s = S.settings; const k = INC_KIND[i?.kind || (route().q.kind === 'funding' ? 'funding' : 'income')] === INC_KIND.funding ? 'funding' : 'income'; const K = INC_KIND[k];
+    return `<form id="incf" class="stack" novalidate>
+      <div class="choice">${Object.entries(INC_KIND).map(([v, x]) => `<label><input type="radio" name="kind" value="${v}" ${k === v ? 'checked' : ''}><span><b>${ic(v === 'income' ? 'coins' : 'wallet', 18)} ${x.t}</b><small>${x.h}</small></span></label>`).join('')}</div>
+      <div class="card stack">
       <div class="form-grid">
-        <label class="field" style="grid-column:1/-1"><span>Что продали / за что оплата</span><input class="input" name="title" value="${esc(i?.title || '')}" placeholder="Например: Навес 6×4 м, изготовление" required></label>
+        <label class="field" style="grid-column:1/-1"><span data-kl="title">${K.title}</span><input class="input" name="title" value="${esc(i?.title || '')}" placeholder="${K.ph}" required></label>
         <label class="field"><span>Сумма, ${cur()}</span><input class="input" name="amount" inputmode="decimal" value="${esc(i?.amount ?? '')}" required></label>
         <label class="field"><span>Дата</span><input class="input" type="date" name="date" value="${esc(i?.date || today())}" max="${today()}"></label>
         <label class="field"><span>Способ оплаты</span><select class="input" name="method">${Object.entries(METHOD).map(([k, v]) => `<option value="${k}" ${(i?.method || 'account') === k ? 'selected' : ''}>${v}</option>`).join('')}</select></label>
-        <label class="field"><span>Клиент</span><input class="input" name="client" value="${esc(i?.client || '')}" placeholder="Кто заплатил"></label>
+        <label class="field"><span data-kl="client">${K.client}</span><input class="input" name="client" value="${esc(i?.client || '')}" placeholder="${K.cph}"></label>
         <label class="field" ${so('use_objects') ? '' : 'hidden'}><span>${esc(objL())}${s.require_object ? ' *' : ''}</span><select class="input" name="object"><option value="">— не выбран —</option>${s.objects.map((o) => `<option ${i?.object === o ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select></label>
-        <label class="field"><span>Категория${s.require_category ? ' *' : ''}</span><select class="input" name="category"><option value="">— не выбрана —</option>${s.income_categories.map((o) => `<option ${i?.category === o ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select></label>
+        <label class="field" data-only="income" ${k === 'funding' ? 'hidden' : ''}><span>Категория${s.require_category ? ' *' : ''}</span><select class="input" name="category"><option value="">— не выбрана —</option>${s.income_categories.map((o) => `<option ${i?.category === o ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select></label>
       </div>
       <label class="field"><span>Комментарий</span><textarea class="input" name="comment">${esc(i?.comment || '')}</textarea></label>
-      <div class="row" style="justify-content:flex-end"><a class="btn soft" href="${i ? `#/income/${i.id}` : '#/incomes'}">Отмена</a><button class="btn lg">${i ? 'Сохранить' : 'Внести доход'}</button></div>
+      <div class="note" data-only="funding" ${k === 'funding' ? '' : 'hidden'}>${ic('wallet')}<span>Приход попадёт в кассу, но <b>не будет считаться доходом</b>: не влияет на доходы, расходы и результат месяца. Расходом станут покупки, оплаченные из этих денег.</span></div>
+      <div class="row" style="justify-content:flex-end"><a class="btn soft" href="${i ? `#/income/${i.id}` : '#/incomes'}">Отмена</a><button class="btn lg" data-kl="ok">${i ? 'Сохранить' : `Внести: ${K.t.toLowerCase()}`}</button></div>
       ${i ? '' : '<p class="faint small" style="margin:0;text-align:right">Документ (накладную, акт, чек) можно прикрепить на следующем шаге.</p>'}
+      </div>
     </form>`;
   }
   function bindIncomeForm(existing) {
     const f = $('#incf');
+    const sync = () => {
+      const k = f.elements.kind.value; const K = INC_KIND[k];
+      $('[data-kl="title"]', f).textContent = K.title; f.title.placeholder = K.ph;
+      $('[data-kl="client"]', f).textContent = K.client; f.client.placeholder = K.cph;
+      if (!existing) $('[data-kl="ok"]', f).textContent = `Внести: ${K.t.toLowerCase()}`;
+      $$('[data-only]', f).forEach((el) => { el.hidden = el.dataset.only !== k; });
+    };
+    $$('input[name="kind"]', f).forEach((x) => x.onchange = sync);
     f.onsubmit = async (e) => {
       e.preventDefault();
-      const body = Object.fromEntries([...f.elements].filter((x) => x.name).map((x) => [x.name, x.value]));
+      const body = Object.fromEntries([...f.elements].filter((x) => x.name && x.type !== 'radio').map((x) => [x.name, x.value]));
+      body.kind = f.elements.kind.value;
       body.amount = String(body.amount).replace(/\s/g, '').replace(',', '.');
       try {
         if (existing) { await put(`/api/incomes/${existing.id}`, body); toast('Сохранено'); go(`#/income/${existing.id}`); }
-        else { const r = await post('/api/incomes', body); toast('Доход внесён. Руководитель подтвердит его'); go(`#/income/${r.id}`); }
+        else { const r = await post('/api/incomes', body); toast(body.kind === 'funding' ? 'Приход внесён' : 'Доход внесён'); go(`#/income/${r.id}`); }
       } catch (err) { fail(err); }
     };
   }
-  function pageNewIncome() { return `${head('Внести доход', 'Продажа, услуга или оплата от клиента', '', '<a href="#/incomes">Доходы</a> / новый')}${incomeForm()}`; }
+  function pageNewIncome() { return `${head('Внести поступление', 'Доход — заработанные деньги. Приход на нужды — деньги на покупки и зарплаты, не доход', '', '<a href="#/incomes">Доходы и приходы</a> / новое')}${incomeForm()}`; }
   pageNewIncome.after = () => bindIncomeForm(null);
   let curIncome = null;
   async function pageIncome(r) {
@@ -1247,13 +1267,17 @@
     const acts = [];
     if (isHead() && i.status === 'new' && !i.mine) acts.push(`<button class="btn block lg" data-ia="confirm">${ic('check')} Подтвердить</button><button class="btn danger block" data-ia="reject">Отклонить</button>`);
     if (isHead()) acts.push(`<button class="btn outline block sm" data-ia="comment">${ic('chat', 16)} Комментарий</button>`);
+    if (isHead() && i.status !== 'rejected') acts.push(i.kind === 'funding'
+      ? `<button class="btn soft block sm" data-ia="set_kind" data-kind="income">${ic('coins', 16)} Это доход</button>`
+      : `<button class="btn soft block sm" data-ia="set_kind" data-kind="funding">${ic('wallet', 16)} Это приход на нужды, не доход</button>`);
     if (i.mine && i.can_edit) acts.push(`<span class="timer" data-until="${i.edit_until}">${ic('clock', 13)}</span><a class="btn soft block" href="#/income/${i.id}/edit">${ic('edit', 16)} Изменить</a>`);
     if (i.mine && !i.can_edit && i.status !== 'rejected') acts.push(i.corrections.some((c) => c.status === 'pending') ? `<div class="note">${ic('clock')}<span>Запрос на корректировку отправлен.</span></div>` : `<button class="btn outline block" data-ia="correction">${ic('unlock', 16)} Запросить корректировку</button>`);
     return `${head(esc(i.title), `${esc(i.number)} · внёс ${esc(i.user_name)} · ${dt(i.created_at)}`, pill(i.status, i.status_text), `<a href="#/incomes">Доходы</a> / ${esc(i.number)}`)}
       <div class="detail"><div class="stack">
         ${i.head_comment ? `<div class="note ${i.status === 'rejected' ? 'warn' : ''}">${ic('chat')}<span><b>Руководитель:</b> ${esc(i.head_comment)}</span></div>` : ''}
-        <div class="card"><div class="money-line"><span class="muted">Сумма</span><b class="up" style="font-size:1.6rem">+${money(i.amount)}</b></div>
-          <dl class="kv" style="margin-top:10px"><dt>Дата</dt><dd>${esc(i.date)}</dd><dt>Оплата</dt><dd>${METHOD[i.method]}</dd>${i.client ? `<dt>Клиент</dt><dd>${esc(i.client)}</dd>` : ''}${i.object ? `<dt>${esc(objL())}</dt><dd>${esc(i.object)}</dd>` : ''}${i.category ? `<dt>Категория</dt><dd>${esc(i.category)}</dd>` : ''}</dl>
+        ${i.kind === 'funding' ? `<div class="note">${ic('wallet')}<span><b>Приход на нужды — не доход.</b> Деньги в кассе, но в доходы, расходы и результат месяца не входят.</span></div>` : ''}
+        <div class="card"><div class="money-line"><span class="muted">Сумма</span><b class="${i.kind === 'funding' ? '' : 'up'}" style="font-size:1.6rem">+${money(i.amount)}</b></div>
+          <dl class="kv" style="margin-top:10px"><dt>Вид</dt><dd>${esc(i.kind_text)}</dd><dt>Дата</dt><dd>${esc(i.date)}</dd><dt>Оплата</dt><dd>${METHOD[i.method]}</dd>${i.client ? `<dt>${i.kind === 'funding' ? 'От кого' : 'Клиент'}</dt><dd>${esc(i.client)}</dd>` : ''}${i.object ? `<dt>${esc(objL())}</dt><dd>${esc(i.object)}</dd>` : ''}${i.category ? `<dt>Категория</dt><dd>${esc(i.category)}</dd>` : ''}</dl>
           ${i.comment ? `<div class="quote" style="margin-top:12px">${esc(i.comment)}</div>` : ''}</div>
         <div class="card"><h3>Документы</h3>${i.files.length ? `<div class="files">${i.files.map((f) => fileCard(f, i.mine && i.can_edit)).join('')}</div>` : !(i.mine && i.can_edit) ? '<div class="empty small">Файлов нет</div>' : ''}
           ${i.mine && i.can_edit ? `<label class="drop" id="drop" style="margin-top:12px">${ic('upload', 26)}<b>Прикрепить накладную, акт или чек</b><input type="file" id="file-in" accept="image/*,application/pdf" multiple hidden></label>` : ''}<div id="ai-out"></div></div>
@@ -1266,6 +1290,11 @@
     $$('[data-ia]').forEach((b) => b.onclick = async () => {
       const a = b.dataset.ia;
       if (a === 'correction') return correctionDialog('income', i.id);
+      if (a === 'set_kind') {
+        const toF = b.dataset.kind === 'funding';
+        if (!(await confirmBox(toF ? 'Это приход на нужды?' : 'Это доход?', toF ? `${money(i.amount)} перестанут считаться доходом: уйдут из доходов и результата месяца. В кассе деньги останутся.` : `${money(i.amount)} начнут считаться доходом и войдут в результат месяца.`, toF ? 'Да, это приход' : 'Да, это доход'))) return;
+        try { await post(`/api/incomes/${i.id}/action`, { action: 'set_kind', kind: b.dataset.kind }); toast('Готово'); render(); } catch (e) { fail(e); } return;
+      }
       let comment = '';
       if (a !== 'confirm') { const res = await ask({ title: a === 'reject' ? 'Отклонить доход' : 'Комментарий', fields: [{ name: 'comment', label: a === 'reject' ? 'Причина' : 'Текст', type: 'textarea', required: true }], ok: 'Отправить', danger: a === 'reject' }); if (!res) return; comment = res.comment; }
       try { await post(`/api/incomes/${i.id}/action`, { action: a, comment }); toast('Готово'); render(); } catch (e) { fail(e); }
@@ -1596,10 +1625,10 @@
   };
 
   // ================= Операции: история движения денег =================
-  const OP_IC = { income: 'coins', expense: 'receipt', cash: 'wallet' };
+  const OP_IC = { income: 'coins', funding: 'wallet', expense: 'receipt', cash: 'wallet' };
   function opRow(x) {
     const meta = [esc(x.kind_text), x.source ? `<a class="link" href="#${x.link}">${esc(x.source)}</a>` : '', esc(x.user_name || ''), esc(x.object || ''), esc(x.category || '')].filter(Boolean).join(' · ');
-    const tag = !x.pl ? `<span class="tag">${x.dup ? 'касса · уже в доходах' : 'движение кассы'}</span>` : '';
+    const tag = x.type === 'funding' ? '<span class="tag">приход · не доход</span>' : !x.pl ? `<span class="tag">${x.funding ? 'касса · приход на нужды' : x.dup ? 'касса · уже в доходах' : 'движение кассы'}</span>` : '';
     return `<div class="li"><div class="t1 row" style="gap:10px;flex-wrap:nowrap"><span class="ev"><span class="ic ${x.dir === 'in' ? 'hl' : ''}">${ic(OP_IC[x.type] || 'money', 13)}</span></span><span style="min-width:0;overflow:hidden;text-overflow:ellipsis">${esc(x.title)}</span></div>
       <div class="amt ${x.dir === 'in' ? 'up' : ''}">${x.dir === 'in' ? '+' : '−'}${money(x.amount)}</div>
       <div class="t2" style="grid-column:1/-1;padding-left:32px"><span>${meta}</span>${tag}<span class="faint">${dt(x.ts)}</span></div></div>`;
@@ -1655,7 +1684,7 @@
     const c = cashData;
     const presets = periodPresets();
     const link = (extra) => `#/cash?${new URLSearchParams({ ...q, ...extra })}`;
-    const kindTabs = [['', 'Все'], ['topup', 'Пополнения'], ['expense', 'Расходы'], ['issue', 'Выдачи'], ['return', 'Возвраты'], ['income', 'Доходы'], ['withdraw', 'Сдано'], ['recount', 'Пересчёт']];
+    const kindTabs = [['', 'Все'], ['topup', 'Пополнения'], ['expense', 'Расходы'], ['issue', 'Выдачи'], ['return', 'Возвраты'], ['income', 'Доходы и приходы'], ['withdraw', 'Сдано'], ['recount', 'Пересчёт']];
     const rows = c.items.map((o) => {
       const basis = o.request_id ? `<a class="link" href="#/r/${o.request_id}">${esc(o.request_number)}</a> ${esc(o.request_title || '')}`
         : o.income_id ? `<a class="link" href="#/income/${o.income_id}">${esc(o.income_number)}</a> ${esc(o.income_title || '')}` : esc(o.comment);

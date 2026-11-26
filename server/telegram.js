@@ -130,15 +130,16 @@ const notify = {
   },
   incomeCreated(id) {
     const i = L.loadIncome(id);
-    if (i.status === 'confirmed') { fire(toHeads(i.user_id, `💰 Доход <b>${h(L.incNumber(id))}</b> · ${h(userName(i.user_id))}\n<b>${h(i.title)}</b>\nСумма: <b>${h(fm(i.amount))}</b> · учтён сразу`, [], `/income/${id}`)); return; }
-    fire(toHeads(i.user_id, [`💰 Новый доход <b>${h(L.incNumber(id))}</b> · ${h(userName(i.user_id))}`, `<b>${h(i.title)}</b>`,
+    const what = i.kind === 'funding' ? 'Приход на нужды' : 'Доход';
+    if (i.status === 'confirmed') { fire(toHeads(i.user_id, `💰 ${what} <b>${h(L.incNumber(id))}</b> · ${h(userName(i.user_id))}\n<b>${h(i.title)}</b>\nСумма: <b>${h(fm(i.amount))}</b> · учтён сразу`, [], `/income/${id}`)); return; }
+    fire(toHeads(i.user_id, [`💰 ${i.kind === 'funding' ? 'Новый приход на нужды (не доход)' : 'Новый доход'} <b>${h(L.incNumber(id))}</b> · ${h(userName(i.user_id))}`, `<b>${h(i.title)}</b>`,
       `Сумма: <b>${h(fm(i.amount))}</b> · ${h({ cash: 'наличные', card: 'карта', account: 'на счёт' }[i.method])} · ${h(i.date)}`, i.client ? `Клиент: ${h(i.client)}` : ''].filter(Boolean).join('\n'),
     [[['✅ Подтвердить', `h:confirm:i:${id}`], ['❌ Отклонить', `h:reject:i:${id}`]]], `/income/${id}`));
   },
   incomeDecided(id, action, actorId) {
     const i = L.loadIncome(id);
     if (i.user_id === actorId || !['confirm', 'reject'].includes(action)) return;
-    fire(toUser(i.user_id, action === 'confirm' ? `✅ Доход <b>${h(L.incNumber(id))}</b> «${h(i.title)}» подтверждён.` : `❌ Доход <b>${h(L.incNumber(id))}</b> «${h(i.title)}» отклонён.\nПричина: <i>${h(i.head_comment)}</i>`, [], `/income/${id}`));
+    fire(toUser(i.user_id, action === 'confirm' ? `✅ ${i.kind === 'funding' ? 'Приход' : 'Доход'} <b>${h(L.incNumber(id))}</b> «${h(i.title)}» подтверждён.` : `❌ ${i.kind === 'funding' ? 'Приход' : 'Доход'} <b>${h(L.incNumber(id))}</b> «${h(i.title)}» отклонён.\nПричина: <i>${h(i.head_comment)}</i>`, [], `/income/${id}`));
   },
   correctionRequested(cid) {
     const c = db.prepare('SELECT * FROM corrections WHERE id = ?').get(cid);
